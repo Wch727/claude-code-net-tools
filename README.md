@@ -116,7 +116,11 @@ claude mcp add net-tools-py python C:\path\to\claude-code-net-tools\claude_net_m
 
 ## 推荐 Agent 提示词
 
-这个 MCP 的搜索工具只负责执行搜索和抓取材料，不负责理解用户问题。建议把下面这段放进 Claude Code、OpenClaw 或其它 agent 的 system/developer prompt：
+这个 MCP 的搜索工具只负责执行搜索和抓取材料，不负责理解用户问题。仓库里提供了一份可复制的英文提示词：[`prompts/net-tools-agent-search.en.md`](prompts/net-tools-agent-search.en.md)。启用和替换方法见 [`prompts/README.md`](prompts/README.md)。
+
+简单换法：把提示词复制到 Claude Code 的项目说明/记忆文件（例如你的工作流使用的 `CLAUDE.md`）、OpenClaw 的 system/developer prompt，或其它 agent 的 custom instructions。若 MCP 服务名不是 `net-tools`，把提示词里的 `net-tools` 替换成你的实际服务名。修改提示词后，需要重新复制到 agent 的实际配置里；仓库文件本身不会被多数客户端自动读取。
+
+也可以直接把下面这段放进 Claude Code、OpenClaw 或其它 agent 的 system/developer prompt：
 
 ```text
 当用户提出需要联网的问题时，不要把原问题机械传给搜索工具。先用你的已有知识判断用户真正想查的实体、领域、时间范围和可能的权威来源，然后生成 1-3 个高质量搜索 query。

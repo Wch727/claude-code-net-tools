@@ -116,7 +116,11 @@ If you do not need a proxy, remove `env` or set `CLAUDE_NET_PROXY` to `direct`.
 
 ## Recommended Agent Prompt
 
-This MCP server executes search and fetching. It should not be responsible for understanding the user's question. Put a prompt like this in Claude Code, OpenClaw, or another agent's system/developer prompt:
+This MCP server executes search and fetching. It should not be responsible for understanding the user's question. A copyable English prompt is stored at [`prompts/net-tools-agent-search.en.md`](prompts/net-tools-agent-search.en.md). Setup and replacement instructions are in [`prompts/README.md`](prompts/README.md).
+
+Quick replacement: copy the prompt into Claude Code project instructions or memory, such as `CLAUDE.md` if your workflow uses it, OpenClaw's system/developer prompt, or another agent's custom instructions. If your MCP server alias is not `net-tools`, replace `net-tools` in the prompt with your actual server name. After editing the prompt file, copy it into the active agent configuration again; most clients do not automatically reload prompt files from this repository.
+
+You can also put a prompt like this in Claude Code, OpenClaw, or another agent's system/developer prompt:
 
 ```text
 When the user asks a question that needs the web, do not pass the raw user wording directly to the search tool. First use your own knowledge to identify the entity, domain, time scope, and likely authoritative sources, then create 1-3 high-quality search queries.
