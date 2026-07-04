@@ -107,6 +107,7 @@ claude mcp add net-tools-py python C:\path\to\claude-code-net-tools\claude_net_m
 | `CLAUDE_NET_DISABLED_PROVIDERS` | 禁用指定 provider，例如 `duckduckgo,bing_html`。 |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | provider 连续失败多少次后自动跳过，默认 `3`。 |
 | `CLAUDE_NET_ARXIV_COOLDOWN_MS` | arXiv 返回 429 后的冷却时间，默认 `5000` 毫秒。 |
+| `CLAUDE_NET_ARXIV_API_URL` | 高级/测试用 arXiv API endpoint 覆盖；普通用户保持未设置。 |
 | `CLAUDE_NET_DEFAULT_MAX_CHARS` | `fetch_url` 默认返回字符数，默认 `12000`。 |
 | `CLAUDE_NET_MAX_OUTPUT_CHARS` | 单次工具输出的最大字符数，默认 `200000`。 |
 | `CLAUDE_NET_MAX_FETCH_BYTES` | 单次下载的最大字节数，默认由版本决定，可用于限制大文件。 |
@@ -229,7 +230,7 @@ claude
 
 - `proxy_status`：显示当前网络出口、provider 顺序和关键环境变量状态。
 - `pdf_status`：检查本机 `pdftotext` 路径、版本和可执行状态。
-- `search_status`：查看搜索 provider 的 key 配置、禁用状态、最近成功/失败和可选 live 探测。
+- `search_status`：查看 web/scholar provider 的 key 配置、禁用状态、最近成功/失败和可选 live 探测；默认不 live 探测付费 API provider，除非显式传 `include_paid: true` 或只指定该 provider。
 - `search_web`：基础网页搜索。默认只做 provider 失败降级、去重和域名过滤；不扩写 query、不做严格相关性过滤、不做启发式重排、不主动探测跳转最终 URL。让 LLM 先写好 query，再用它拿材料。
 - `search_web_focused`：显式增强网页搜索。支持 cleaned core query 扩展、严格相关性过滤、可选重排和可选跳转解析；适合基础搜索太吵时再用。
 - `scholar_search`：专项搜索论文，当前支持 Crossref、Semantic Scholar、arXiv。论文简称最好由 LLM 先扩写成带全称/作者/编号的 query；默认把 arXiv 放在后面，并在遇到 429 时冷却，减少限速压力。
@@ -324,6 +325,7 @@ Use net-tools search_web to search "Attention Is All You Need arXiv PDF" count 5
 
 ```powershell
 npm run check
+npm test
 ```
 
-这个命令会检查 Node 版语法，并编译检查 Python 版。默认不下载依赖。
+`npm run check` 会检查 Node 版语法，并编译检查 Python 版。`npm test` 会在本地启动离线 fixture，分别通过 MCP JSON-RPC 烟测 Node/curl 版和 Python 版，覆盖工具列表一致性、`fetch_url` 分页/链接提取、`search_status` provider 诊断和 arXiv 429 冷却。默认不下载依赖。

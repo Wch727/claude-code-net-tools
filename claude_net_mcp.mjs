@@ -19,6 +19,7 @@ const CURL = process.env.CLAUDE_NET_CURL || "curl.exe";
 const PROVIDER_FAIL_LIMIT = Math.max(1, Math.min(Number(process.env.CLAUDE_NET_PROVIDER_FAIL_LIMIT) || 3, 10));
 const PROVIDER_STATS = new Map();
 const ARXIV_COOLDOWN_MS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_ARXIV_COOLDOWN_MS) || 5000, 60000));
+const ARXIV_API_URL = process.env.CLAUDE_NET_ARXIV_API_URL || "https://export.arxiv.org/api/query";
 let arxivRateLimitedUntil = 0;
 const SEARCH_PROVIDER_META = {
   kimi: { kind: "api", env: ["KIMI_API_KEY", "MOONSHOT_API_KEY"], description: "Kimi/Moonshot web search API" },
@@ -32,6 +33,12 @@ const SEARCH_PROVIDER_META = {
   sogou: { kind: "free", env: [], description: "Sogou HTML fallback" },
   so360: { kind: "free", env: [], description: "360 Search HTML fallback" },
 };
+const SCHOLAR_PROVIDER_META = {
+  crossref: { kind: "free", env: [], description: "Crossref Works API" },
+  semantic_scholar: { kind: "free", env: [], description: "Semantic Scholar Graph API" },
+  arxiv: { kind: "free", env: [], description: "arXiv API" },
+};
+
 const TOOLS = [
   { name: "proxy_status", description: "Show local VPN/proxy routes and provider order.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "pdf_status", description: "Check the local PDF text extraction command used by fetch_pdf.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
@@ -44,6 +51,7 @@ const TOOLS = [
         query: { type: "string", default: "Claude Code MCP" },
         providers: { type: "array", items: { type: "string" } },
         live: { type: "boolean", default: false, description: "When true, run a one-result live probe for available providers." },
+        include_paid: { type: "boolean", default: false, description: "When live is true, also probe API providers that may cost money." },
       },
       additionalProperties: false,
     },
@@ -725,13 +733,34 @@ function disabledProviderSet() {
   return new Set(splitList(process.env.CLAUDE_NET_DISABLED_PROVIDERS).map(normalizeProviderName));
 }
 
-function providerAvailability(provider) {
+function providerMeta(provider) {
+  const name = normalizeProviderName(provider);
+  return SEARCH_PROVIDER_META[name] || SCHOLAR_PROVIDER_META[name] || null;
+}
+
+function providerGroup(provider) {
+  const name = normalizeProviderName(provider);
+  if (SEARCH_PROVIDER_META[name]) return "web";
+  if (SCHOLAR_PROVIDER_META[name]) return "scholar";
+  return "unknown";
+}
+
+function providerEnvStatus(meta) {
+  const env = meta?.env || [];
+  if (!env.length) return "none";
+  return env.map((key) => key + "=" + (process.env[key] ? "set" : "missing")).join("|");
+}
+
+function providerAvailability(provider, group = "all") {
   const name = normalizeProviderName(provider);
   const disabled = disabledProviderSet();
   if (disabled.has(name)) return { available: false, reason: "disabled by CLAUDE_NET_DISABLED_PROVIDERS" };
-  const meta = SEARCH_PROVIDER_META[name];
+  const meta = group === "web" ? SEARCH_PROVIDER_META[name] : group === "scholar" ? SCHOLAR_PROVIDER_META[name] : providerMeta(name);
   if (!meta) return { available: false, reason: "unknown provider" };
   if (meta.env && meta.env.length && !meta.env.some((key) => Boolean(process.env[key]))) return { available: false, reason: "missing env: " + meta.env.join(" or ") };
+  if (name === "arxiv" && arxivRateLimitedUntil > Date.now()) {
+    return { available: false, reason: "arXiv cooldown for about " + Math.ceil((arxivRateLimitedUntil - Date.now()) / 1000) + "s after HTTP 429" };
+  }
   return { available: true, reason: "configured" };
 }
 
@@ -784,7 +813,7 @@ function activeProviderOrder(query, override, notes = [], options = {}) {
   const explicit = Array.isArray(override) && override.length;
   const out = [];
   for (const provider of providerOrder(query, override)) {
-    const availability = providerAvailability(provider);
+    const availability = providerAvailability(provider, "web");
     if (!availability.available) {
       notes.push(provider + ": skipped (" + availability.reason + ")");
       continue;
@@ -825,27 +854,87 @@ async function runProviderTracked(provider, query, count) {
   }
 }
 
-async function searchStatus(args = {}) {
-  const query = String(args?.query || "Claude Code MCP").trim() || "Claude Code MCP";
-  const providers = dedupeProviders(Array.isArray(args?.providers) && args.providers.length ? args.providers : Object.keys(SEARCH_PROVIDER_META));
-  const lines = ["Search provider status:", "Default non-CJK order: " + providerOrder("test", []).join(", "), "Default CJK order: " + providerOrder("测试", []).join(", "), "Failure skip threshold: " + PROVIDER_FAIL_LIMIT, ""];
-  const probe = Boolean(args?.live);
-  for (const provider of providers) {
-    const availability = providerAvailability(provider);
-    if (probe && availability.available) {
-      try { await runProviderTracked(provider, query, 1); } catch { /* stats already recorded */ }
-    }
-    const stats = providerStats(provider);
-    const meta = SEARCH_PROVIDER_META[provider] || {};
-    const pieces = ["- " + provider, "kind=" + (meta.kind || "unknown"), "available=" + availability.available, "reason=" + availability.reason, "success=" + stats.success, "failure=" + stats.failure, "consecutiveFailures=" + stats.consecutiveFailures];
-    if (stats.lastAt) pieces.push("last=" + stats.lastCount + " result(s) in " + stats.lastMs + "ms at " + stats.lastAt);
-    if (stats.lastError) pieces.push("lastError=" + stats.lastError);
-    lines.push(pieces.join("; "));
+async function runScholarProviderTracked(provider, query, count) {
+  const started = Date.now();
+  try {
+    const rows = await scholarProvider(provider, query, count);
+    recordProvider(provider, true, Date.now() - started, rows.length);
+    return rows;
+  } catch (error) {
+    recordProvider(provider, false, Date.now() - started, 0, error.message || String(error));
+    throw error;
   }
-  if (!probe) lines.push("", "Set live=true to run one-result health probes for available providers.");
-  return lines.join("\n");
 }
 
+function statusProviderGroups(args) {
+  const explicit = Array.isArray(args?.providers) && args.providers.length;
+  if (explicit) return [{ title: "Selected providers", providers: dedupeProviders(args.providers) }];
+  return [
+    { title: "Web providers", providers: Object.keys(SEARCH_PROVIDER_META) },
+    { title: "Scholar providers", providers: Object.keys(SCHOLAR_PROVIDER_META) },
+  ];
+}
+
+async function searchStatus(args = {}) {
+  const query = String(args?.query || "Claude Code MCP").trim() || "Claude Code MCP";
+  const probe = Boolean(args?.live);
+  const includePaid = Boolean(args?.include_paid);
+  const explicitProviders = Array.isArray(args?.providers) && args.providers.length;
+  const disabled = [...disabledProviderSet()].sort();
+  const lines = [
+    "Search provider status:",
+    "Default web non-CJK order: " + providerOrder("test", []).join(", "),
+    "Default web CJK order: " + providerOrder("测试", []).join(", "),
+    "Default scholar order: " + scholarProviderOrder([]).join(", "),
+    "Disabled providers: " + (disabled.length ? disabled.join(", ") : "(none)"),
+    "Failure skip threshold: " + PROVIDER_FAIL_LIMIT,
+    "Live paid probes: " + (includePaid ? "enabled" : "disabled unless providers are explicitly listed"),
+    "",
+  ];
+  for (const groupInfo of statusProviderGroups(args)) {
+    lines.push(groupInfo.title + ":");
+    for (const provider of groupInfo.providers) {
+      const name = normalizeProviderName(provider);
+      const group = providerGroup(name);
+      const meta = providerMeta(name) || {};
+      const availability = providerAvailability(name, group === "unknown" ? "all" : group);
+      let liveNote = "";
+      if (probe && availability.available) {
+        if (meta.kind === "api" && !includePaid && !explicitProviders) {
+          liveNote = "liveProbe=skipped paid API (set include_paid=true or list providers explicitly)";
+        } else {
+          try {
+            if (group === "scholar") await runScholarProviderTracked(name, query, 1);
+            else await runProviderTracked(name, query, 1);
+            liveNote = "liveProbe=ok";
+          } catch {
+            liveNote = "liveProbe=failed";
+          }
+        }
+      }
+      const stats = providerStats(name);
+      const pieces = [
+        "- " + name,
+        "group=" + group,
+        "kind=" + (meta.kind || "unknown"),
+        "available=" + availability.available,
+        "reason=" + availability.reason,
+        "env=" + providerEnvStatus(meta),
+        "success=" + stats.success,
+        "failure=" + stats.failure,
+        "consecutiveFailures=" + stats.consecutiveFailures,
+      ];
+      if (liveNote) pieces.push(liveNote);
+      if (meta.description) pieces.push("description=" + meta.description);
+      if (stats.lastAt) pieces.push("last=" + stats.lastCount + " result(s) in " + stats.lastMs + "ms at " + stats.lastAt);
+      if (stats.lastError) pieces.push("lastError=" + stats.lastError);
+      lines.push(pieces.join("; "));
+    }
+    lines.push("");
+  }
+  if (!probe) lines.push("Set live=true to run one-result health probes for available free providers. Add include_paid=true to probe configured API providers.");
+  return lines.join("\n").trimEnd();
+}
 async function searchSemanticScholar(query, count) {
   const fields = "title,url,abstract,year,venue,authors,externalIds,openAccessPdf";
   const { text } = await curlRequest("https://api.semanticscholar.org/graph/v1/paper/search?" + new URLSearchParams({ query, limit: String(count), fields }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
@@ -905,7 +994,8 @@ async function searchArxiv(query, count) {
   const searchQuery = arxivId ? "id_list:" + arxivId : 'ti:"' + cleaned + '"';
   if (arxivId) params.set("id_list", arxivId);
   else params.set("search_query", searchQuery);
-  const response = await curlRequest("https://export.arxiv.org/api/query?" + params, { headers: { Accept: "application/atom+xml,application/xml" }, timeout: 20, maxBytes: 1800000 });
+  const separator = ARXIV_API_URL.includes("?") ? "&" : "?";
+  const response = await curlRequest(ARXIV_API_URL + separator + params, { headers: { Accept: "application/atom+xml,application/xml" }, timeout: 20, maxBytes: 1800000 });
   const status = Number(response.status || 0);
   if (status === 429) {
     arxivRateLimitedUntil = Date.now() + ARXIV_COOLDOWN_MS;

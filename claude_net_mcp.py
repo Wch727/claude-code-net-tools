@@ -36,6 +36,7 @@ DEFAULT_FETCH_MAX_CHARS = max(500, min(int(os.environ.get("CLAUDE_NET_DEFAULT_MA
 MAX_OUTPUT_CHARS = max(1000, min(int(os.environ.get("CLAUDE_NET_MAX_OUTPUT_CHARS", "200000")), 1000000))
 DEFAULT_LOCAL_PROXY_PORTS = (7890, 7897, 7899, 10809, 10808, 1080, 8080, 20171, 2080)
 ARXIV_COOLDOWN_SECONDS = max(1.0, min(float(os.environ.get("CLAUDE_NET_ARXIV_COOLDOWN_MS", "5000")) / 1000.0, 60.0))
+ARXIV_API_URL = os.environ.get("CLAUDE_NET_ARXIV_API_URL", "https://export.arxiv.org/api/query")
 ARXIV_RATE_LIMITED_UNTIL = 0.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 TRANSPORT_MODE = ""
@@ -52,6 +53,11 @@ SEARCH_PROVIDER_META = {
     "bing_html": {"kind": "free", "env": [], "description": "Bing HTML fallback"},
     "sogou": {"kind": "free", "env": [], "description": "Sogou HTML fallback"},
     "so360": {"kind": "free", "env": [], "description": "360 Search HTML fallback"},
+}
+SCHOLAR_PROVIDER_META = {
+    "crossref": {"kind": "free", "env": [], "description": "Crossref Works API"},
+    "semantic_scholar": {"kind": "free", "env": [], "description": "Semantic Scholar Graph API"},
+    "arxiv": {"kind": "free", "env": [], "description": "arXiv API"},
 }
 
 def _json_dump(data: Any) -> str:
@@ -701,16 +707,45 @@ def _disabled_provider_set() -> set[str]:
     return {_normalize_provider_name(item) for item in _split_list(os.environ.get("CLAUDE_NET_DISABLED_PROVIDERS", ""))}
 
 
-def _provider_availability(provider: Any) -> dict[str, Any]:
+def _provider_meta(provider: Any) -> dict[str, Any] | None:
+    name = _normalize_provider_name(provider)
+    return SEARCH_PROVIDER_META.get(name) or SCHOLAR_PROVIDER_META.get(name)
+
+
+def _provider_group(provider: Any) -> str:
+    name = _normalize_provider_name(provider)
+    if name in SEARCH_PROVIDER_META:
+        return "web"
+    if name in SCHOLAR_PROVIDER_META:
+        return "scholar"
+    return "unknown"
+
+
+def _provider_env_status(meta: dict[str, Any] | None) -> str:
+    envs = (meta or {}).get("env") or []
+    if not envs:
+        return "none"
+    return "|".join(f"{key}={'set' if os.environ.get(key) else 'missing'}" for key in envs)
+
+
+def _provider_availability(provider: Any, group: str = "all") -> dict[str, Any]:
     name = _normalize_provider_name(provider)
     if name in _disabled_provider_set():
         return {"available": False, "reason": "disabled by CLAUDE_NET_DISABLED_PROVIDERS"}
-    meta = SEARCH_PROVIDER_META.get(name)
+    if group == "web":
+        meta = SEARCH_PROVIDER_META.get(name)
+    elif group == "scholar":
+        meta = SCHOLAR_PROVIDER_META.get(name)
+    else:
+        meta = _provider_meta(name)
     if not meta:
         return {"available": False, "reason": "unknown provider"}
     envs = meta.get("env") or []
     if envs and not any(os.environ.get(key) for key in envs):
         return {"available": False, "reason": "missing env: " + " or ".join(envs)}
+    if name == "arxiv" and ARXIV_RATE_LIMITED_UNTIL > time.time():
+        wait = int(ARXIV_RATE_LIMITED_UNTIL - time.time() + 0.999)
+        return {"available": False, "reason": f"arXiv cooldown for about {wait}s after HTTP 429"}
     return {"available": True, "reason": "configured"}
 
 
@@ -763,7 +798,7 @@ def _active_provider_order(query: str, override: Any, notes: list[str], ignore_f
     explicit = isinstance(override, list) and bool(override)
     out: list[str] = []
     for provider in _provider_order(query, override):
-        availability = _provider_availability(provider)
+        availability = _provider_availability(provider, "web")
         if not availability["available"]:
             notes.append(f"{provider}: skipped ({availability['reason']})")
             continue
@@ -811,30 +846,88 @@ def _run_provider_tracked(provider: str, query: str, count: int) -> list[dict[st
         raise
 
 
+def _run_scholar_provider_tracked(provider: str, query: str, count: int) -> list[dict[str, str]]:
+    started = time.time()
+    try:
+        rows = _scholar_provider(provider, query, count)
+        _record_provider(provider, True, int((time.time() - started) * 1000), len(rows))
+        return rows
+    except Exception as exc:  # noqa: BLE001
+        _record_provider(provider, False, int((time.time() - started) * 1000), 0, str(exc))
+        raise
+
+
+def _status_provider_groups(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    providers = arguments.get("providers")
+    if isinstance(providers, list) and providers:
+        return [{"title": "Selected providers", "providers": _dedupe_providers(providers)}]
+    return [
+        {"title": "Web providers", "providers": list(SEARCH_PROVIDER_META.keys())},
+        {"title": "Scholar providers", "providers": list(SCHOLAR_PROVIDER_META.keys())},
+    ]
+
+
 def search_status(arguments: dict[str, Any]) -> str:
     query = str(arguments.get("query") or "Claude Code MCP").strip() or "Claude Code MCP"
-    providers = _dedupe_providers(arguments.get("providers") if isinstance(arguments.get("providers"), list) and arguments.get("providers") else list(SEARCH_PROVIDER_META.keys()))
-    lines = ["Search provider status:", "Default non-CJK order: " + ", ".join(_provider_order("test", [])), "Default CJK order: " + ", ".join(_provider_order("测试", [])), f"Failure skip threshold: {PROVIDER_FAIL_LIMIT}", ""]
     live = _as_bool(arguments.get("live"))
-    for provider in providers:
-        availability = _provider_availability(provider)
-        if live and availability["available"]:
-            try:
-                _run_provider_tracked(provider, query, 1)
-            except Exception:
-                pass
-        stats = _provider_stats(provider)
-        meta = SEARCH_PROVIDER_META.get(provider, {})
-        pieces = [f"- {provider}", f"kind={meta.get('kind', 'unknown')}", f"available={availability['available']}", f"reason={availability['reason']}", f"success={stats['success']}", f"failure={stats['failure']}", f"consecutiveFailures={stats['consecutiveFailures']}"]
-        if stats.get("lastAt"):
-            pieces.append(f"last={stats['lastCount']} result(s) in {stats['lastMs']}ms at {stats['lastAt']}")
-        if stats.get("lastError"):
-            pieces.append("lastError=" + stats["lastError"])
-        lines.append("; ".join(pieces))
+    include_paid = _as_bool(arguments.get("include_paid"))
+    explicit_providers = isinstance(arguments.get("providers"), list) and bool(arguments.get("providers"))
+    disabled = sorted(_disabled_provider_set())
+    lines = [
+        "Search provider status:",
+        "Default web non-CJK order: " + ", ".join(_provider_order("test", [])),
+        "Default web CJK order: " + ", ".join(_provider_order("测试", [])),
+        "Default scholar order: " + ", ".join(_scholar_provider_order([])),
+        "Disabled providers: " + (", ".join(disabled) if disabled else "(none)"),
+        f"Failure skip threshold: {PROVIDER_FAIL_LIMIT}",
+        "Live paid probes: " + ("enabled" if include_paid else "disabled unless providers are explicitly listed"),
+        "",
+    ]
+    for group_info in _status_provider_groups(arguments):
+        lines.append(group_info["title"] + ":")
+        for provider in group_info["providers"]:
+            name = _normalize_provider_name(provider)
+            group = _provider_group(name)
+            meta = _provider_meta(name) or {}
+            availability = _provider_availability(name, group if group != "unknown" else "all")
+            live_note = ""
+            if live and availability["available"]:
+                if meta.get("kind") == "api" and not include_paid and not explicit_providers:
+                    live_note = "liveProbe=skipped paid API (set include_paid=true or list providers explicitly)"
+                else:
+                    try:
+                        if group == "scholar":
+                            _run_scholar_provider_tracked(name, query, 1)
+                        else:
+                            _run_provider_tracked(name, query, 1)
+                        live_note = "liveProbe=ok"
+                    except Exception:
+                        live_note = "liveProbe=failed"
+            stats = _provider_stats(name)
+            pieces = [
+                f"- {name}",
+                f"group={group}",
+                f"kind={meta.get('kind', 'unknown')}",
+                f"available={availability['available']}",
+                f"reason={availability['reason']}",
+                "env=" + _provider_env_status(meta),
+                f"success={stats['success']}",
+                f"failure={stats['failure']}",
+                f"consecutiveFailures={stats['consecutiveFailures']}",
+            ]
+            if live_note:
+                pieces.append(live_note)
+            if meta.get("description"):
+                pieces.append("description=" + str(meta["description"]))
+            if stats.get("lastAt"):
+                pieces.append(f"last={stats['lastCount']} result(s) in {stats['lastMs']}ms at {stats['lastAt']}")
+            if stats.get("lastError"):
+                pieces.append("lastError=" + stats["lastError"])
+            lines.append("; ".join(pieces))
+        lines.append("")
     if not live:
-        lines.extend(["", "Set live=true to run one-result health probes for available providers."])
-    return "\n".join(lines)
-
+        lines.append("Set live=true to run one-result health probes for available free providers. Add include_paid=true to probe configured API providers.")
+    return "\n".join(lines).rstrip()
 
 def _search_semantic_scholar(query: str, count: int) -> list[dict[str, str]]:
     fields = "title,url,abstract,year,venue,authors,externalIds,openAccessPdf"
@@ -900,7 +993,8 @@ def _search_arxiv(query: str, count: int) -> list[dict[str, str]]:
     else:
         label = f'ti:"{cleaned}"'
         params = {"search_query": label, "start": 0, "max_results": count}
-    _, content_type, body, _, status = _request_url("https://export.arxiv.org/api/query?" + urllib.parse.urlencode(params), timeout=20, max_bytes=1800000, headers={"Accept": "application/atom+xml,application/xml"})
+    separator = "&" if "?" in ARXIV_API_URL else "?"
+    _, content_type, body, _, status = _request_url(ARXIV_API_URL + separator + urllib.parse.urlencode(params), timeout=20, max_bytes=1800000, headers={"Accept": "application/atom+xml,application/xml"})
     if int(status or 0) == 429:
         ARXIV_RATE_LIMITED_UNTIL = time.time() + ARXIV_COOLDOWN_SECONDS
         raise ValueError(f"HTTP 429 rate limited for {label}; arXiv skipped without extra retry")
@@ -1579,7 +1673,7 @@ def proxy_status(arguments: dict[str, Any]) -> str:
 TOOLS = [
     {"name": "proxy_status", "description": "Show which local VPN/proxy routes this server will try before direct connection.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "pdf_status", "description": "Check the local PDF text extraction command used by fetch_pdf.", "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "search_status", "description": "Show search provider availability, recent failures, and optional live health probes.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "Claude Code MCP"}, "providers": {"type": "array", "items": {"type": "string"}}, "live": {"type": "boolean", "default": False, "description": "When true, run a one-result live probe for available providers."}}}},
+    {"name": "search_status", "description": "Show search provider availability, recent failures, and optional live health probes.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "Claude Code MCP"}, "providers": {"type": "array", "items": {"type": "string"}}, "live": {"type": "boolean", "default": False, "description": "When true, run a one-result live probe for available providers."}, "include_paid": {"type": "boolean", "default": False, "description": "When live is true, also probe API providers that may cost money."}}}},
     {"name": "search_web", "description": "Default web search. Executes the exact query, preserves provider order, and does not expand, filter, rerank, or resolve redirects.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
     {"name": "search_web_focused", "description": "Opt-in recovery search for noisy results. Can expand CJK core queries, filter relevance, rerank, and resolve redirects when explicitly requested.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "expand_query": {"type": "boolean", "default": True, "description": "For CJK questions, also try a cleaned core query."}, "strict_relevance": {"type": "boolean", "default": True, "description": "Drop results that do not contain the core query."}, "rerank": {"type": "boolean", "default": False, "description": "When true, apply heuristic result re-ranking."}, "resolve_redirects": {"type": "boolean", "default": False, "description": "Resolve known search-engine redirect URLs to their final target URLs."}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
     {"name": "scholar_search", "description": "Search academic papers through specialized providers such as Semantic Scholar, Crossref, and arXiv.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}, "description": "semantic_scholar, crossref, arxiv"}}, "required": ["query"]}},

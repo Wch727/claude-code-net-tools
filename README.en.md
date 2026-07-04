@@ -107,6 +107,7 @@ If you do not need a proxy, remove `env` or set `CLAUDE_NET_PROXY` to `direct`.
 | `CLAUDE_NET_DISABLED_PROVIDERS` | Disable providers, for example `duckduckgo,bing_html`. |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | Consecutive provider failures before automatic skip. Default `3`. |
 | `CLAUDE_NET_ARXIV_COOLDOWN_MS` | Cooldown after arXiv returns HTTP 429. Default `5000` ms. |
+| `CLAUDE_NET_ARXIV_API_URL` | Advanced/testing override for the arXiv API endpoint. Normal users should leave it unset. |
 | `CLAUDE_NET_DEFAULT_MAX_CHARS` | Default `fetch_url` character output. Default `12000`. |
 | `CLAUDE_NET_MAX_OUTPUT_CHARS` | Maximum characters returned by one tool call. Default `200000`. |
 | `CLAUDE_NET_MAX_FETCH_BYTES` | Maximum bytes downloaded by one fetch call. Useful for bounding large files. |
@@ -229,7 +230,7 @@ Quick replacement: choose the Chinese or English prompt, copy the full `text` co
 
 - `proxy_status`: shows the current route, provider order, and important environment-variable status.
 - `pdf_status`: checks the local `pdftotext` path, version, and executable status.
-- `search_status`: shows provider key configuration, disabled status, recent success/failure counts, and optional live probes.
+- `search_status`: shows web/scholar provider key configuration, disabled status, recent success/failure counts, and optional live probes. It does not live-probe paid API providers by default unless `include_paid: true` is passed or only that provider is selected.
 - `search_web`: basic web search. By default it only handles provider fallback, deduplication, and domain filters; it does not expand queries, apply strict relevance filtering, rerank results, or actively probe redirect final URLs. Let the LLM write the query first, then use this tool for source material.
 - `search_web_focused`: explicit assisted web search with cleaned core-query expansion, strict relevance filtering, optional reranking, and optional redirect resolution. Use it only when basic search is too noisy.
 - `scholar_search`: specialized paper search through Crossref, Semantic Scholar, and arXiv. For acronyms, the LLM should expand the query with the full name, authors, or paper ID first; arXiv is later in the default order and enters cooldown after HTTP 429 to reduce rate-limit pressure.
@@ -324,6 +325,7 @@ A good run does not require every provider to succeed. It should show the active
 
 ```powershell
 npm run check
+npm test
 ```
 
-This checks the Node build syntax and compiles the Python build. It does not download dependencies.
+`npm run check` checks the Node build syntax and compiles the Python build. `npm test` starts a local offline fixture and smoke-tests both the Node/curl and Python builds through MCP JSON-RPC, covering tool-list parity, `fetch_url` paging/link extraction, `search_status` provider diagnostics, and arXiv HTTP 429 cooldown. It does not download dependencies.
