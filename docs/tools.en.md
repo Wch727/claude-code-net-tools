@@ -4,6 +4,7 @@
 
 ## Status Tools
 
+- `net_doctor`: main Claude Code networking diagnostic. By default it checks local runtime, route, provider configuration, and PDF extraction without running a real web search. Pass `live=true` for one actual search smoke test; paid API providers stay skipped unless `include_paid=true`.
 - `proxy_status`: shows the current route, default provider order, and auto-detected proxy ports.
 - `search_status`: shows web/scholar provider key configuration, disabled status, recent success/failure counts, and optional live probes. It does not live-probe paid API providers by default unless `include_paid: true` is passed or only that provider is selected.
 - `pdf_status`: checks the local `pdftotext` path, version, and executable status.

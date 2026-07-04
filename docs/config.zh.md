@@ -21,6 +21,31 @@ Python 备用版：
 - Poppler `pdftotext`：用于 `fetch_pdf` 提取 PDF 文本。安装后放进 PATH，或设置 `CLAUDE_NET_PDFTOTEXT`。
 - 搜索 API key：只通过环境变量传入，例如 `KIMI_API_KEY`、`MINIMAX_API_KEY`、`BRAVE_SEARCH_API_KEY`、`SERPER_API_KEY`、`TAVILY_API_KEY`。
 
+## 安装脚本
+
+在仓库根目录里，最简单的 Claude Code 安装方式是：
+
+```powershell
+.\scripts\install-claude-code.ps1
+```
+
+macOS/Linux：
+
+```bash
+./scripts/install-claude-code.sh
+```
+
+常用选项：
+
+```powershell
+.\scripts\install-claude-code.ps1 -Proxy http://127.0.0.1:7890
+.\scripts\install-claude-code.ps1 -Proxy direct
+.\scripts\install-claude-code.ps1 -Providers bing_rss,duckduckgo,bing_html
+.\scripts\install-claude-code.ps1 -Runtime python
+.\scripts\install-claude-code.ps1 -Force
+```
+
+脚本只负责把 MCP server 注册到 Claude Code，不安装依赖，也不会写入 API key。移动仓库路径、切换 runtime、修改网络出口或 provider 环境变量后，重新运行即可。
 ## MCP 配置示例
 
 ```json
@@ -44,7 +69,7 @@ Python 备用版：
 | `CLAUDE_NET_PROXY` | 强制网络出口。支持 `http://`、`https://`、`socks5h://`（Node/curl 版）或 `direct`。 |
 | `CLAUDE_NET_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` | 未设置 `CLAUDE_NET_PROXY` 时的代理回退。 |
 | `CLAUDE_NET_PROXY_PORTS` | 未指定代理时自动探测的本地端口列表，例如 `7890,7897,1080`。 |
-| `CLAUDE_NET_SEARCH_PROVIDERS` | 覆盖网页搜索 provider 顺序，例如 `kimi,minimax,duckduckgo,bing_rss`。 |
+| `CLAUDE_NET_SEARCH_PROVIDERS` | 覆盖网页搜索 provider 顺序，例如 `bing_rss,duckduckgo,bing_html`。 |
 | `CLAUDE_NET_SCHOLAR_PROVIDERS` | 覆盖学术搜索 provider 顺序，例如 `crossref,semantic_scholar,arxiv`。 |
 | `CLAUDE_NET_DISABLED_PROVIDERS` | 禁用指定 provider，例如 `duckduckgo,bing_html,arxiv`。 |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | provider 连续失败多少次后自动跳过，默认 `3`。 |
@@ -72,7 +97,7 @@ API key 只从环境变量读取，不要写进代码、README、提交记录或
 | `serper` | `SERPER_API_KEY` 或 `GOOGLE_SERPER_API_KEY` | - |
 | `tavily` | `TAVILY_API_KEY` | - |
 
-只配置 key 不等于一定会调用付费 API。默认搜索仍优先免费 provider；要让 API provider 参与搜索，需要设置 `CLAUDE_NET_SEARCH_PROVIDERS`，或在单次工具调用里传 `providers`。
+只配置 key 不等于一定会调用付费 API。默认搜索仍优先免费 provider；低成本配置建议用 `CLAUDE_NET_SEARCH_PROVIDERS=bing_rss,duckduckgo,bing_html`。只有明确想用 API 搜索时，再把 Kimi/MiniMax/其他 API provider 加进去。
 
 ## Provider 策略
 

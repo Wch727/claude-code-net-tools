@@ -7,6 +7,7 @@
 安装或改配置后，建议在 Claude Code 里按顺序问这些题。它们能覆盖网络出口、搜索、抓取、分页、学术搜索和 PDF。
 
 ```text
+Use net-tools net_doctor live=true query="Claude Code MCP".
 Use net-tools proxy_status.
 Use net-tools search_status.
 Use net-tools search_web to search "叶兰峰是谁" count 5.
@@ -37,6 +38,7 @@ npm test
 `npm run check` 会检查 Node 版语法，并编译检查 Python 版。`npm test` 会在本地启动离线 fixture，分别通过 MCP JSON-RPC 烟测 Node/curl 版和 Python 版，覆盖：
 
 - 工具列表和 schema parity。
+- `net_doctor` 配置诊断，默认不调用付费 API。
 - `fetch_url` 分页和链接提取。
 - `session_create/session_status/session_clear` 以及 session headers/cookies/referer。
 - `search_status` provider 诊断。

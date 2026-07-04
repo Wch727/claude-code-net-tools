@@ -4,6 +4,7 @@
 
 ## 状态工具
 
+- `net_doctor`：Claude Code 联网总诊断。默认只检查本机 runtime、网络出口、provider 配置和 PDF 提取，不实际搜索；传 `live=true` 才做一次真实搜索烟测，付费 API provider 默认仍跳过，除非传 `include_paid=true`。
 - `proxy_status`：显示当前网络出口、默认 provider 顺序和自动探测代理端口。
 - `search_status`：查看 web/scholar provider 的 key 配置、禁用状态、最近成功/失败和可选 live 探测。默认不 live 探测付费 API provider，除非显式传 `include_paid: true` 或只指定该 provider。
 - `pdf_status`：检查本机 `pdftotext` 路径、版本和可执行状态。

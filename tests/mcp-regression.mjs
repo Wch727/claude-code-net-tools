@@ -129,10 +129,15 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     await client.initialize();
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    for (const required of ["proxy_status", "search_status", "session_create", "session_status", "session_clear", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
+    for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
       assert.ok(names.includes(required), `${label} missing tool ${required}`);
     }
 
+    const doctor = await client.callTool("net_doctor", { providers: ["duckduckgo", "kimi"], live: false });
+    assertIncludes(doctor, "Claude Code net-tools doctor:", `${label} net_doctor`);
+    assertIncludes(doctor, "Mode: configuration only", `${label} net_doctor`);
+    assertIncludes(doctor, "Provider readiness:", `${label} net_doctor`);
+    assertIncludes(doctor, "kimi: skipped paid API", `${label} net_doctor`);
     const status = await client.callTool("search_status", { providers: ["duckduckgo", "arxiv", "kimi", "not_real"] });
     assertIncludes(status, "Default scholar order:", `${label} search_status`);
     assertIncludes(status, "group=web", `${label} search_status`);

@@ -40,7 +40,21 @@ const SCHOLAR_PROVIDER_META = {
 };
 
 const TOOLS = [
-  { name: "proxy_status", description: "Show local VPN/proxy routes and provider order.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+  {
+    name: "net_doctor",
+    description: "Run a Claude Code net-tools health check. Defaults to configuration-only checks; set live=true for one low-cost search smoke test.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", default: "Claude Code MCP" },
+        count: { type: "number", minimum: 1, maximum: 5, default: 2 },
+        providers: { type: "array", items: { type: "string" } },
+        live: { type: "boolean", default: false, description: "When true, run one actual search smoke test." },
+        include_paid: { type: "boolean", default: false, description: "When live=true, allow configured paid API providers." },
+      },
+      additionalProperties: false,
+    },
+  },  { name: "proxy_status", description: "Show local VPN/proxy routes and provider order.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "pdf_status", description: "Check the local PDF text extraction command used by fetch_pdf.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   {
     name: "search_status",
@@ -1076,7 +1090,7 @@ async function searchStatus(args = {}) {
   const lines = [
     "Search provider status:",
     "Default web non-CJK order: " + providerOrder("test", []).join(", "),
-    "Default web CJK order: " + providerOrder("测试", []).join(", "),
+    "Default web CJK order: " + providerOrder("\u6d4b\u8bd5", []).join(", "),
     "Default scholar order: " + scholarProviderOrder([]).join(", "),
     "Disabled providers: " + (disabled.length ? disabled.join(", ") : "(none)"),
     "Failure skip threshold: " + PROVIDER_FAIL_LIMIT,
@@ -1125,6 +1139,110 @@ async function searchStatus(args = {}) {
     lines.push("");
   }
   if (!probe) lines.push("Set live=true to run one-result health probes for available free providers. Add include_paid=true to probe configured API providers.");
+  return lines.join("\n").trimEnd();
+}
+function indentBlock(text, prefix = "  ") {
+  return String(text || "").split("\n").map((line) => prefix + line).join("\n");
+}
+
+async function commandVersion(command, args = ["--version"]) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 65536 });
+    return trimDiagnostic(`${stdout}\n${stderr}`, 400).split("\n")[0];
+  } catch (error) {
+    return "unavailable or failed: " + error.message;
+  }
+}
+
+function proxySettingSummary() {
+  const pinned = String(process.env.CLAUDE_NET_PROXY || "").trim();
+  if (!pinned) return "auto-detect local proxy ports, then direct";
+  if (["direct", "none", "off", "0"].includes(pinned.toLowerCase())) return "direct only (CLAUDE_NET_PROXY=" + pinned + ")";
+  return "forced proxy " + normalizeProxy(pinned) + ", then direct fallback";
+}
+
+function routeLabel(route) {
+  return route || "direct";
+}
+
+function envSummary(meta) {
+  const env = meta?.env || [];
+  if (!env.length) return "no key needed";
+  return env.map((key) => key + "=" + (process.env[key] ? "set" : "missing")).join("/");
+}
+
+function doctorProviderList(query, args = {}) {
+  const raw = Array.isArray(args?.providers) && args.providers.length ? args.providers : providerOrder(query, []);
+  const includePaid = Boolean(args?.include_paid);
+  const providers = [];
+  const skipped = [];
+  for (const provider of dedupeProviders(raw)) {
+    const name = normalizeProviderName(provider);
+    const meta = SEARCH_PROVIDER_META[name];
+    if (!meta) {
+      skipped.push(name + ": skipped (not a web-search provider)");
+      continue;
+    }
+    if (meta.kind === "api" && !includePaid) {
+      skipped.push(name + ": skipped paid API (set include_paid=true to allow it)");
+      continue;
+    }
+    providers.push(name);
+  }
+  return { providers, skipped };
+}
+
+function providerReadinessLine(provider) {
+  const name = normalizeProviderName(provider);
+  const meta = SEARCH_PROVIDER_META[name];
+  const availability = providerAvailability(name, "web");
+  const stats = providerStats(name);
+  return "- " + name + "; kind=" + (meta?.kind || "unknown") + "; available=" + availability.available + "; reason=" + availability.reason + "; env=" + envSummary(meta) + "; consecutiveFailures=" + stats.consecutiveFailures;
+}
+
+async function netDoctor(args = {}) {
+  const query = String(args?.query || "Claude Code MCP").trim() || "Claude Code MCP";
+  const live = Boolean(args?.live);
+  const includePaid = Boolean(args?.include_paid);
+  const count = Math.max(1, Math.min(Number(args?.count) || 2, 5));
+  const routes = await proxyCandidates();
+  const livePlan = doctorProviderList(query, { ...args, include_paid: includePaid });
+  const readinessProviders = dedupeProviders(Array.isArray(args?.providers) && args.providers.length ? args.providers : providerOrder(query, []));
+  const disabled = [...disabledProviderSet()].sort();
+  const lines = [
+    "Claude Code net-tools doctor:",
+    "Mode: " + (live ? "configuration + live search smoke" : "configuration only"),
+    "Server: " + SERVER_NAME + " " + SERVER_VERSION,
+    "Runtime: Node.js " + process.versions.node,
+    "curl: " + await commandVersion(CURL),
+    "Proxy setting: " + proxySettingSummary(),
+    "Routes: " + routes.map(routeLabel).join(" -> "),
+    "Default web non-CJK order: " + providerOrder("test", []).join(", "),
+    "Default web CJK order: " + providerOrder("\u6d4b\u8bd5", []).join(", "),
+    "Default scholar order: " + scholarProviderOrder([]).join(", "),
+    "Disabled providers: " + (disabled.length ? disabled.join(", ") : "(none)"),
+    "Paid API live probes: " + (includePaid ? "allowed" : "skipped by default"),
+    "",
+    "Provider readiness:",
+    ...readinessProviders.map(providerReadinessLine),
+  ];
+  for (const note of livePlan.skipped) lines.push("- " + note);
+  lines.push("", "PDF extraction:", indentBlock(await pdfStatus()));
+  if (!live) {
+    lines.push("", "Next: call net_doctor with live=true to run one actual web search smoke test. Paid API providers stay skipped unless include_paid=true.");
+    return lines.join("\n").trimEnd();
+  }
+  lines.push("", "Live search smoke:");
+  if (!livePlan.providers.length) {
+    lines.push("  skipped: no web-search provider remains after filtering. Set providers or include_paid=true if you intentionally want an API provider.");
+    return lines.join("\n").trimEnd();
+  }
+  try {
+    const text = await searchWeb({ query, count, providers: livePlan.providers });
+    lines.push(indentBlock(text));
+  } catch (error) {
+    lines.push("  failed: " + (error.message || String(error)));
+  }
   return lines.join("\n").trimEnd();
 }
 async function searchSemanticScholar(query, count) {
@@ -1777,6 +1895,7 @@ function sendResult(id, result) { send({ jsonrpc: "2.0", id, result }); }
 function sendError(id, code, message) { send({ jsonrpc: "2.0", id, error: { code, message } }); }
 
 async function callTool(name, args) {
+  if (name === "net_doctor") return netDoctor(args);
   if (name === "proxy_status") return proxyStatus(args);
   if (name === "pdf_status") return pdfStatus(args);
   if (name === "search_status") return searchStatus(args);

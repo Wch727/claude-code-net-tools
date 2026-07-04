@@ -4,9 +4,10 @@
 
 ## Claude Code Smoke Prompts
 
-After installation or config changes, ask these in Claude Code in order. They cover route detection, search, fetching, paging, scholar search, and PDF handling.
+After installation or config changes, ask these in Claude Code in order. They cover the main doctor check, route detection, search, fetching, paging, scholar search, and PDF handling.
 
 ```text
+Use net-tools net_doctor live=true query="Claude Code MCP".
 Use net-tools proxy_status.
 Use net-tools search_status.
 Use net-tools search_web to search "叶兰峰是谁" count 5.
@@ -37,6 +38,7 @@ npm test
 `npm run check` checks Node syntax and compiles the Python build. `npm test` starts a local offline fixture and tests both builds through MCP JSON-RPC, covering:
 
 - Tool list and schema parity.
+- `net_doctor` configuration-only diagnostics without paid API calls.
 - `fetch_url` paging and link extraction.
 - `session_create/session_status/session_clear` plus session headers/cookies/referer.
 - `search_status` provider diagnostics.

@@ -1066,7 +1066,7 @@ def search_status(arguments: dict[str, Any]) -> str:
     lines = [
         "Search provider status:",
         "Default web non-CJK order: " + ", ".join(_provider_order("test", [])),
-        "Default web CJK order: " + ", ".join(_provider_order("测试", [])),
+        "Default web CJK order: " + ", ".join(_provider_order("\u6d4b\u8bd5", [])),
         "Default scholar order: " + ", ".join(_scholar_provider_order([])),
         "Disabled providers: " + (", ".join(disabled) if disabled else "(none)"),
         f"Failure skip threshold: {PROVIDER_FAIL_LIMIT}",
@@ -1117,6 +1117,105 @@ def search_status(arguments: dict[str, Any]) -> str:
         lines.append("")
     if not live:
         lines.append("Set live=true to run one-result health probes for available free providers. Add include_paid=true to probe configured API providers.")
+    return "\n".join(lines).rstrip()
+
+def _indent_block(text: str, prefix: str = "  ") -> str:
+    return "\n".join(prefix + line for line in str(text or "").splitlines())
+
+
+def _command_version(command: str, args: list[str] | None = None) -> str:
+    try:
+        proc = subprocess.run([command] + (args or ["--version"]), check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        return _trim_diagnostic((proc.stdout or "") + "\n" + (proc.stderr or ""), 400).splitlines()[0]
+    except Exception as exc:  # noqa: BLE001
+        return "unavailable or failed: " + str(exc)
+
+
+def _proxy_setting_summary() -> str:
+    pinned = os.environ.get("CLAUDE_NET_PROXY", "").strip()
+    if not pinned:
+        return "auto-detect local proxy ports, then direct"
+    if pinned.lower() in {"direct", "none", "off", "0"}:
+        return "direct only (CLAUDE_NET_PROXY=" + pinned + ")"
+    return "forced proxy " + _normalize_proxy(pinned) + ", then direct fallback"
+
+
+def _route_label(route: str | None) -> str:
+    return route or "direct"
+
+
+def _env_summary(meta: dict[str, Any] | None) -> str:
+    envs = (meta or {}).get("env") or []
+    if not envs:
+        return "no key needed"
+    return "/".join(key + "=" + ("set" if os.environ.get(key) else "missing") for key in envs)
+
+
+def _doctor_provider_list(query: str, arguments: dict[str, Any]) -> tuple[list[str], list[str]]:
+    raw = arguments.get("providers") if isinstance(arguments.get("providers"), list) and arguments.get("providers") else _provider_order(query, [])
+    include_paid = _as_bool(arguments.get("include_paid"))
+    providers: list[str] = []
+    skipped: list[str] = []
+    for provider in _dedupe_providers(raw):
+        name = _normalize_provider_name(provider)
+        meta = SEARCH_PROVIDER_META.get(name)
+        if not meta:
+            skipped.append(name + ": skipped (not a web-search provider)")
+            continue
+        if meta.get("kind") == "api" and not include_paid:
+            skipped.append(name + ": skipped paid API (set include_paid=true to allow it)")
+            continue
+        providers.append(name)
+    return providers, skipped
+
+
+def _provider_readiness_line(provider: Any) -> str:
+    name = _normalize_provider_name(provider)
+    meta = SEARCH_PROVIDER_META.get(name)
+    availability = _provider_availability(name, "web")
+    stats = _provider_stats(name)
+    return "- " + name + "; kind=" + str((meta or {}).get("kind", "unknown")) + "; available=" + str(availability["available"]) + "; reason=" + str(availability["reason"]) + "; env=" + _env_summary(meta) + "; consecutiveFailures=" + str(stats["consecutiveFailures"])
+
+
+def net_doctor(arguments: dict[str, Any]) -> str:
+    query = str(arguments.get("query") or "Claude Code MCP").strip() or "Claude Code MCP"
+    live = _as_bool(arguments.get("live"))
+    include_paid = _as_bool(arguments.get("include_paid"))
+    count = max(1, min(int(arguments.get("count") or 2), 5))
+    routes = _proxy_candidates()
+    live_providers, skipped = _doctor_provider_list(query, {**arguments, "include_paid": include_paid})
+    readiness_providers = _dedupe_providers(arguments.get("providers") if isinstance(arguments.get("providers"), list) and arguments.get("providers") else _provider_order(query, []))
+    disabled = sorted(_disabled_provider_set())
+    lines = [
+        "Claude Code net-tools doctor:",
+        "Mode: " + ("configuration + live search smoke" if live else "configuration only"),
+        "Server: " + SERVER_NAME + " " + SERVER_VERSION,
+        "Runtime: Python " + sys.version.split()[0],
+        "urllib: stdlib HTTP client",
+        "Proxy setting: " + _proxy_setting_summary(),
+        "Routes: " + " -> ".join(_route_label(route) for route in routes),
+        "Default web non-CJK order: " + ", ".join(_provider_order("test", [])),
+        "Default web CJK order: " + ", ".join(_provider_order("\u6d4b\u8bd5", [])),
+        "Default scholar order: " + ", ".join(_scholar_provider_order([])),
+        "Disabled providers: " + (", ".join(disabled) if disabled else "(none)"),
+        "Paid API live probes: " + ("allowed" if include_paid else "skipped by default"),
+        "",
+        "Provider readiness:",
+    ]
+    lines.extend(_provider_readiness_line(provider) for provider in readiness_providers)
+    lines.extend("- " + note for note in skipped)
+    lines.extend(["", "PDF extraction:", _indent_block(pdf_status({}))])
+    if not live:
+        lines.extend(["", "Next: call net_doctor with live=true to run one actual web search smoke test. Paid API providers stay skipped unless include_paid=true."])
+        return "\n".join(lines).rstrip()
+    lines.extend(["", "Live search smoke:"])
+    if not live_providers:
+        lines.append("  skipped: no web-search provider remains after filtering. Set providers or include_paid=true if you intentionally want an API provider.")
+        return "\n".join(lines).rstrip()
+    try:
+        lines.append(_indent_block(search_web({"query": query, "count": count, "providers": live_providers})))
+    except Exception as exc:  # noqa: BLE001
+        lines.append("  failed: " + str(exc))
     return "\n".join(lines).rstrip()
 
 def _search_semantic_scholar(query: str, count: int) -> list[dict[str, str]]:
@@ -1868,6 +1967,7 @@ def proxy_status(arguments: dict[str, Any]) -> str:
 
 
 TOOLS = [
+    {"name": "net_doctor", "description": "Run a Claude Code net-tools health check. Defaults to configuration-only checks; set live=true for one low-cost search smoke test.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "Claude Code MCP"}, "count": {"type": "integer", "minimum": 1, "maximum": 5, "default": 2}, "providers": {"type": "array", "items": {"type": "string"}}, "live": {"type": "boolean", "default": False, "description": "When true, run one actual search smoke test."}, "include_paid": {"type": "boolean", "default": False, "description": "When live=true, allow configured paid API providers."}}}},
     {"name": "proxy_status", "description": "Show which local VPN/proxy routes this server will try before direct connection.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "pdf_status", "description": "Check the local PDF text extraction command used by fetch_pdf.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "search_status", "description": "Show search provider availability, recent failures, and optional live health probes.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "Claude Code MCP"}, "providers": {"type": "array", "items": {"type": "string"}}, "live": {"type": "boolean", "default": False, "description": "When true, run a one-result live probe for available providers."}, "include_paid": {"type": "boolean", "default": False, "description": "When live is true, also probe API providers that may cost money."}}}},
@@ -1886,6 +1986,8 @@ TOOLS = [
 ]
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> str:
+    if name == "net_doctor":
+        return net_doctor(arguments)
     if name == "proxy_status":
         return proxy_status(arguments)
     if name == "pdf_status":

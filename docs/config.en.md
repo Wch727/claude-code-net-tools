@@ -21,6 +21,31 @@ Optional:
 - Poppler `pdftotext`: used by `fetch_pdf`. Put it on PATH or set `CLAUDE_NET_PDFTOTEXT`.
 - Search API keys: pass only through environment variables such as `KIMI_API_KEY`, `MINIMAX_API_KEY`, `BRAVE_SEARCH_API_KEY`, `SERPER_API_KEY`, and `TAVILY_API_KEY`.
 
+## Install Script
+
+From the repository root, the easiest Claude Code install is:
+
+```powershell
+.\scripts\install-claude-code.ps1
+```
+
+macOS/Linux:
+
+```bash
+./scripts/install-claude-code.sh
+```
+
+Common options:
+
+```powershell
+.\scripts\install-claude-code.ps1 -Proxy http://127.0.0.1:7890
+.\scripts\install-claude-code.ps1 -Proxy direct
+.\scripts\install-claude-code.ps1 -Providers bing_rss,duckduckgo,bing_html
+.\scripts\install-claude-code.ps1 -Runtime python
+.\scripts\install-claude-code.ps1 -Force
+```
+
+The script only registers the MCP server with Claude Code. It does not install dependencies or write API keys. Re-run it after moving the repository path, changing runtime, or changing route/provider environment variables.
 ## MCP Config Example
 
 ```json
@@ -44,7 +69,7 @@ Optional:
 | `CLAUDE_NET_PROXY` | Force the route. Supports `http://`, `https://`, `socks5h://` in the Node/curl build, or `direct`. |
 | `CLAUDE_NET_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` | Proxy fallback when `CLAUDE_NET_PROXY` is not set. |
 | `CLAUDE_NET_PROXY_PORTS` | Local ports to auto-detect when no proxy is pinned, for example `7890,7897,1080`. |
-| `CLAUDE_NET_SEARCH_PROVIDERS` | Override web-search provider order, for example `kimi,minimax,duckduckgo,bing_rss`. |
+| `CLAUDE_NET_SEARCH_PROVIDERS` | Override web-search provider order, for example `bing_rss,duckduckgo,bing_html`. |
 | `CLAUDE_NET_SCHOLAR_PROVIDERS` | Override scholar-search provider order, for example `crossref,semantic_scholar,arxiv`. |
 | `CLAUDE_NET_DISABLED_PROVIDERS` | Disable providers, for example `duckduckgo,bing_html,arxiv`. |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | Consecutive provider failures before automatic skip. Default `3`. |
@@ -72,7 +97,7 @@ API keys are read only from environment variables. Do not write them into code, 
 | `serper` | `SERPER_API_KEY` or `GOOGLE_SERPER_API_KEY` | - |
 | `tavily` | `TAVILY_API_KEY` | - |
 
-Setting a key alone does not force paid API usage. Defaults still prefer free providers; to use API providers, set `CLAUDE_NET_SEARCH_PROVIDERS` or pass `providers` in a single tool call.
+Setting a key alone does not force paid API usage. Defaults still prefer free providers; for a low-cost setup use `CLAUDE_NET_SEARCH_PROVIDERS=bing_rss,duckduckgo,bing_html`. Add Kimi/MiniMax/other API providers only when you explicitly want API search.
 
 ## Provider Strategy
 
