@@ -286,6 +286,196 @@ def _cookie_jar_path(name: Any) -> str:
     return os.path.join(root, _safe_cookie_jar_name(name) + ".txt")
 
 
+def _session_name(name: Any) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        raise ValueError("session name is required")
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", raw)[:80] or "default"
+
+
+def _session_cookie_jar_name(name: Any) -> str:
+    return "session_" + _session_name(name)
+
+
+def _session_dir() -> str:
+    return os.environ.get("CLAUDE_NET_SESSION_DIR") or os.path.join(os.path.expanduser("~"), ".claude-code-net-tools", "sessions")
+
+
+def _session_path(name: Any) -> str:
+    root = _session_dir()
+    os.makedirs(root, exist_ok=True)
+    return os.path.join(root, _session_name(name) + ".json")
+
+
+def _merge_cookies(base: Any, extra: Any) -> Any:
+    if not base:
+        return extra or None
+    if not extra:
+        return base
+    if isinstance(base, str) or isinstance(extra, str):
+        return "; ".join(part for part in (_cookie_header(base), _cookie_header(extra)) if part)
+    if isinstance(base, dict) and isinstance(extra, dict):
+        return {**base, **extra}
+    return extra
+
+
+def _read_session(name: Any, optional: bool = False) -> dict[str, Any] | None:
+    if not name:
+        return None
+    path = _session_path(name)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        if optional:
+            return None
+        raise ValueError(f"Unknown session: {name}")
+    return {
+        "name": _session_name(data.get("name") or name),
+        "createdAt": data.get("createdAt") or "",
+        "updatedAt": data.get("updatedAt") or "",
+        "headers": _normalize_headers(data.get("headers") or {}),
+        "cookies": data.get("cookies"),
+        "referer": _sanitize_header_value(data.get("referer") or ""),
+        "cookieJar": data.get("cookieJar") or _session_cookie_jar_name(name),
+    }
+
+
+def _write_session(data: dict[str, Any]) -> dict[str, Any]:
+    name = _session_name(data.get("name"))
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    previous = _read_session(name, optional=True)
+    session = {
+        "name": name,
+        "createdAt": data.get("createdAt") or (previous or {}).get("createdAt") or now,
+        "updatedAt": now,
+        "headers": _normalize_headers(data.get("headers") or {}),
+        "cookies": data.get("cookies"),
+        "referer": _sanitize_header_value(data.get("referer") or ""),
+        "cookieJar": data.get("cookieJar") or (previous or {}).get("cookieJar") or _session_cookie_jar_name(name),
+    }
+    with open(_session_path(name), "w", encoding="utf-8") as handle:
+        json.dump(session, handle, ensure_ascii=False, indent=2)
+    _cookie_jar_path(session["cookieJar"])
+    return session
+
+
+def _redact_cookie_info(cookies: Any) -> str:
+    if not cookies:
+        return "none"
+    if isinstance(cookies, str):
+        return "string" if _cookie_header(cookies) else "none"
+    if isinstance(cookies, dict):
+        return f"{len(cookies)} named cookie(s)"
+    return "unsupported"
+
+
+def _format_session_status(session: dict[str, Any]) -> str:
+    header_names = sorted((session.get("headers") or {}).keys())
+    return "; ".join([
+        "- " + session["name"],
+        "updated=" + (session.get("updatedAt") or "unknown"),
+        "headers=" + (",".join(header_names) if header_names else "none"),
+        "cookies=" + _redact_cookie_info(session.get("cookies")),
+        "referer=" + (session.get("referer") or "none"),
+        "cookieJar=" + session.get("cookieJar", ""),
+    ])
+
+
+def session_create(arguments: dict[str, Any]) -> str:
+    name = _session_name(arguments.get("name"))
+    merge = not (arguments.get("merge") is False)
+    previous = _read_session(name, optional=True) if merge else None
+    headers = dict((previous or {}).get("headers") or {})
+    headers.update(_normalize_headers(arguments.get("headers")))
+    if arguments.get("referer"):
+        headers["Referer"] = _sanitize_header_value(arguments.get("referer"))
+    if arguments.get("user_agent"):
+        headers["User-Agent"] = _sanitize_header_value(arguments.get("user_agent"))
+    session = _write_session({
+        "name": name,
+        "createdAt": (previous or {}).get("createdAt"),
+        "headers": headers,
+        "cookies": _merge_cookies((previous or {}).get("cookies"), arguments.get("cookies")),
+        "referer": _sanitize_header_value(arguments.get("referer") or (previous or {}).get("referer") or ""),
+        "cookieJar": (previous or {}).get("cookieJar") or _session_cookie_jar_name(name),
+    })
+    return "\n".join(["Session saved:", _format_session_status(session), "", "Cookie values are stored locally but redacted from status output."])
+
+
+def session_status(arguments: dict[str, Any]) -> str:
+    if arguments.get("name"):
+        session = _read_session(arguments.get("name"))
+        assert session is not None
+        return "\n".join(["Session status:", _format_session_status(session)])
+    try:
+        files = sorted(file for file in os.listdir(_session_dir()) if file.endswith(".json"))
+    except FileNotFoundError:
+        files = []
+    sessions = []
+    for file in files:
+        try:
+            session = _read_session(file[:-5], optional=True)
+            if session:
+                sessions.append(session)
+        except Exception:
+            pass
+    if not sessions:
+        return "No sessions found."
+    return "\n".join(["Sessions:"] + [_format_session_status(session) for session in sessions])
+
+
+def session_clear(arguments: dict[str, Any]) -> str:
+    if arguments.get("all"):
+        count = 0
+        try:
+            files = sorted(file for file in os.listdir(_session_dir()) if file.endswith(".json"))
+        except FileNotFoundError:
+            files = []
+        for file in files:
+            name = file[:-5]
+            try:
+                os.remove(os.path.join(_session_dir(), file))
+            except FileNotFoundError:
+                pass
+            jar = _cookie_jar_path(_session_cookie_jar_name(name))
+            try:
+                os.remove(jar)
+            except FileNotFoundError:
+                pass
+            count += 1
+        return f"Cleared {count} session(s)."
+    name = _session_name(arguments.get("name"))
+    try:
+        os.remove(_session_path(name))
+    except FileNotFoundError:
+        pass
+    try:
+        os.remove(_cookie_jar_path(_session_cookie_jar_name(name)))
+    except FileNotFoundError:
+        pass
+    return "Cleared session: " + name
+
+
+def _session_request_context(arguments: dict[str, Any]) -> dict[str, Any]:
+    session = _read_session(arguments.get("session")) if arguments.get("session") else None
+    if not session:
+        return {"headers": {}, "cookies": None, "cookieJar": ""}
+    headers = dict(session.get("headers") or {})
+    if session.get("referer") and not any(key.lower() == "referer" for key in headers):
+        headers["Referer"] = session["referer"]
+    return {"headers": headers, "cookies": session.get("cookies"), "cookieJar": session.get("cookieJar") or _session_cookie_jar_name(session["name"])}
+
+
+def _update_session_referer(arguments: dict[str, Any], final_url: str) -> None:
+    if not arguments.get("session") or arguments.get("update_referer") is False or not final_url:
+        return
+    session = _read_session(arguments.get("session"))
+    assert session is not None
+    session["referer"] = final_url
+    _write_session(session)
+
+
 def _opener(proxy: str | None, cookie_jar: Any = "") -> urllib.request.OpenerDirector:
     handlers = []
     if proxy:
@@ -1267,18 +1457,20 @@ def _ensure_url(url: Any) -> str:
 
 def _request_options(arguments: dict[str, Any], defaults: dict[str, Any] | None = None) -> dict[str, Any]:
     defaults = defaults or {}
+    session_context = _session_request_context(arguments)
     method = str(arguments.get("method") or defaults.get("method") or "GET").upper()
     body_value = arguments.get("body", defaults.get("body"))
     body = body_value.encode("utf-8") if isinstance(body_value, str) else body_value
     headers = dict(defaults.get("headers") or {})
+    headers.update(session_context.get("headers") or {})
     headers.update(_normalize_headers(arguments.get("headers")))
     return {
         "method": method,
         "headers": headers,
         "body": body,
         "timeout": max(1.0, min(float(arguments.get("timeout", defaults.get("timeout", DEFAULT_TIMEOUT))), float(defaults.get("max_timeout", 60.0)))),
-        "cookies": arguments.get("cookies"),
-        "cookie_jar": arguments.get("cookie_jar", ""),
+        "cookies": _merge_cookies(session_context.get("cookies"), arguments.get("cookies")),
+        "cookie_jar": arguments.get("cookie_jar") or session_context.get("cookieJar") or "",
     }
 
 
@@ -1530,6 +1722,7 @@ def fetch_url(arguments: dict[str, Any]) -> str:
     url = _ensure_url(arguments.get("url"))
     max_bytes = max(100000, min(int(arguments.get("max_bytes", MAX_FETCH_BYTES)), 50000000))
     final_url, content_type, body, route, status = _request_url(url, max_bytes=max_bytes, **_request_options(arguments))
+    _update_session_referer(arguments, final_url)
     return _format_fetched_content(final_url, content_type, body, route, status, arguments)
 
 
@@ -1538,6 +1731,7 @@ def extract_links(arguments: dict[str, Any]) -> str:
     limit = max(1, min(int(arguments.get("limit", 50)), 200))
     max_bytes = max(100000, min(int(arguments.get("max_bytes", MAX_FETCH_BYTES)), 50000000))
     final_url, content_type, body, route, status = _request_url(url, max_bytes=max_bytes, **_request_options(arguments))
+    _update_session_referer(arguments, final_url)
     text = _decode_body(body, content_type)
     links = _extract_links_from_html(text, final_url, limit, _as_bool(arguments.get("same_domain")))
     if not links:
@@ -1556,6 +1750,7 @@ def fetch_json(arguments: dict[str, Any]) -> str:
     url = _ensure_url(arguments.get("url"))
     opts = _request_options(arguments, {"headers": {"Accept": "application/json,*/*;q=0.5"}})
     final_url, content_type, body, route, status = _request_url(url, max_bytes=2000000, **opts)
+    _update_session_referer(arguments, final_url)
     try:
         parsed = json.loads(_decode_body(body, content_type))
     except json.JSONDecodeError as exc:
@@ -1573,6 +1768,7 @@ def fetch_rss(arguments: dict[str, Any]) -> str:
     count = max(1, min(int(arguments.get("count", 20)), 50))
     opts = _request_options(arguments, {"headers": {"Accept": "application/rss+xml,application/atom+xml,application/xml,text/xml,*/*;q=0.5"}})
     final_url, content_type, body, route, status = _request_url(url, max_bytes=2000000, **opts)
+    _update_session_referer(arguments, final_url)
     text = _decode_body(body, content_type)
     lines = [f"URL: {final_url}", f"Route: {route}"]
     if status:
@@ -1630,6 +1826,7 @@ def fetch_pdf(arguments: dict[str, Any]) -> str:
     with tempfile.TemporaryDirectory(prefix="ccnet-pdf-") as tmp:
         pdf_path = os.path.join(tmp, "source.pdf")
         final_url, content_type, body, route, status = _request_url(url, max_bytes=50000000, **opts)
+        _update_session_referer(arguments, final_url)
         lines = [f"URL: {final_url}", f"Route: {route}"]
         if status:
             lines.append(f"Status: {status}")
@@ -1674,15 +1871,18 @@ TOOLS = [
     {"name": "proxy_status", "description": "Show which local VPN/proxy routes this server will try before direct connection.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "pdf_status", "description": "Check the local PDF text extraction command used by fetch_pdf.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "search_status", "description": "Show search provider availability, recent failures, and optional live health probes.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "Claude Code MCP"}, "providers": {"type": "array", "items": {"type": "string"}}, "live": {"type": "boolean", "default": False, "description": "When true, run a one-result live probe for available providers."}, "include_paid": {"type": "boolean", "default": False, "description": "When live is true, also probe API providers that may cost money."}}}},
+    {"name": "session_create", "description": "Create or update a named HTTP session with default headers, cookies, referer, and its own cookie jar.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "referer": {"type": "string"}, "user_agent": {"type": "string"}, "merge": {"type": "boolean", "default": True}}, "required": ["name"]}},
+    {"name": "session_status", "description": "List named HTTP sessions or show one session with sensitive cookie values redacted.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+    {"name": "session_clear", "description": "Clear one named HTTP session, or all sessions when all=true.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "all": {"type": "boolean", "default": False}}}},
     {"name": "search_web", "description": "Default web search. Executes the exact query, preserves provider order, and does not expand, filter, rerank, or resolve redirects.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
     {"name": "search_web_focused", "description": "Opt-in recovery search for noisy results. Can expand CJK core queries, filter relevance, rerank, and resolve redirects when explicitly requested.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "expand_query": {"type": "boolean", "default": True, "description": "For CJK questions, also try a cleaned core query."}, "strict_relevance": {"type": "boolean", "default": True, "description": "Drop results that do not contain the core query."}, "rerank": {"type": "boolean", "default": False, "description": "When true, apply heuristic result re-ranking."}, "resolve_redirects": {"type": "boolean", "default": False, "description": "Resolve known search-engine redirect URLs to their final target URLs."}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
     {"name": "scholar_search", "description": "Search academic papers through specialized providers such as Semantic Scholar, Crossref, and arXiv.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}, "description": "semantic_scholar, crossref, arxiv"}}, "required": ["query"]}},
     {"name": "package_search", "description": "Search developer package and repository indexes such as npm, PyPI, and GitHub repositories.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "ecosystem": {"type": "string", "enum": ["all", "npm", "pypi", "github"], "default": "all"}, "providers": {"type": "array", "items": {"type": "string"}, "description": "npm, pypi, github"}}, "required": ["query"]}},
-    {"name": "fetch_url", "description": "Fetch one URL and return content. Supports offset paging for long text and optional link extraction in the same call.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": MAX_OUTPUT_CHARS, "default": DEFAULT_FETCH_MAX_CHARS, "description": "Maximum extracted characters to return for this page."}, "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Character offset into the extracted content. Use next_offset to continue long pages."}, "max_bytes": {"type": "integer", "minimum": 100000, "maximum": 50000000, "default": MAX_FETCH_BYTES, "description": "Maximum response bytes to download before extraction."}, "include_links": {"type": "boolean", "default": False, "description": "Also extract page links from the fetched HTML."}, "link_limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "same_domain_links": {"type": "boolean", "default": False}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "body": {"type": "string"}, "extract": {"type": "string", "enum": ["auto", "readable", "text", "markdown", "raw"], "default": "auto"}}, "required": ["url"]}},
-    {"name": "extract_links", "description": "Fetch a page and extract normalized links from its HTML.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "same_domain": {"type": "boolean", "default": False}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}}, "required": ["url"]}},
-    {"name": "fetch_json", "description": "Fetch a JSON endpoint and pretty-print parsed JSON.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 100000, "default": 30000}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "body": {"type": "string"}}, "required": ["url"]}},
-    {"name": "fetch_rss", "description": "Fetch an RSS or Atom feed and return feed entries.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}}, "required": ["url"]}},
-    {"name": "fetch_pdf", "description": "Download a PDF and extract text with pdftotext when available.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 100000, "default": 30000}, "timeout": {"type": "number", "minimum": 1, "maximum": 120, "default": 30}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "extractor": {"type": "string", "enum": ["auto", "pdftotext", "none"], "default": "auto", "description": "PDF extraction mode. Use none to only verify/download the PDF."}}, "required": ["url"]}},
+    {"name": "fetch_url", "description": "Fetch one URL and return content. Supports offset paging for long text and optional link extraction in the same call.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": MAX_OUTPUT_CHARS, "default": DEFAULT_FETCH_MAX_CHARS, "description": "Maximum extracted characters to return for this page."}, "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Character offset into the extracted content. Use next_offset to continue long pages."}, "max_bytes": {"type": "integer", "minimum": 100000, "maximum": 50000000, "default": MAX_FETCH_BYTES, "description": "Maximum response bytes to download before extraction."}, "include_links": {"type": "boolean", "default": False, "description": "Also extract page links from the fetched HTML."}, "link_limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "same_domain_links": {"type": "boolean", "default": False}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "session": {"type": "string"}, "update_referer": {"type": "boolean", "default": True}, "body": {"type": "string"}, "extract": {"type": "string", "enum": ["auto", "readable", "text", "markdown", "raw"], "default": "auto"}}, "required": ["url"]}},
+    {"name": "extract_links", "description": "Fetch a page and extract normalized links from its HTML.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "same_domain": {"type": "boolean", "default": False}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "session": {"type": "string"}, "update_referer": {"type": "boolean", "default": True}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}}, "required": ["url"]}},
+    {"name": "fetch_json", "description": "Fetch a JSON endpoint and pretty-print parsed JSON.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 100000, "default": 30000}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "session": {"type": "string"}, "update_referer": {"type": "boolean", "default": True}, "body": {"type": "string"}}, "required": ["url"]}},
+    {"name": "fetch_rss", "description": "Fetch an RSS or Atom feed and return feed entries.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "session": {"type": "string"}, "update_referer": {"type": "boolean", "default": True}}, "required": ["url"]}},
+    {"name": "fetch_pdf", "description": "Download a PDF and extract text with pdftotext when available.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 100000, "default": 30000}, "timeout": {"type": "number", "minimum": 1, "maximum": 120, "default": 30}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "session": {"type": "string"}, "update_referer": {"type": "boolean", "default": True}, "extractor": {"type": "string", "enum": ["auto", "pdftotext", "none"], "default": "auto", "description": "PDF extraction mode. Use none to only verify/download the PDF."}}, "required": ["url"]}},
 ]
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> str:
@@ -1692,6 +1892,12 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> str:
         return pdf_status(arguments)
     if name == "search_status":
         return search_status(arguments)
+    if name == "session_create":
+        return session_create(arguments)
+    if name == "session_status":
+        return session_status(arguments)
+    if name == "session_clear":
+        return session_clear(arguments)
     if name == "search_web":
         return search_web(arguments)
     if name == "search_web_focused":

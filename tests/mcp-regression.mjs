@@ -109,7 +109,8 @@ function cleanEnv(baseUrl, runtime) {
   env.CLAUDE_NET_PROXY = "direct";
   env.CLAUDE_NET_ARXIV_API_URL = `${baseUrl}/arxiv`;
   env.CLAUDE_NET_ARXIV_COOLDOWN_MS = "60000";
-  env.CLAUDE_NET_COOKIE_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`);
+  env.CLAUDE_NET_COOKIE_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "cookies");
+  env.CLAUDE_NET_SESSION_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "sessions");
   env.CLAUDE_NET_CURL = process.platform === "win32" ? "curl.exe" : "curl";
   return env;
 }
@@ -128,7 +129,7 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     await client.initialize();
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    for (const required of ["proxy_status", "search_status", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
+    for (const required of ["proxy_status", "search_status", "session_create", "session_status", "session_clear", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
       assert.ok(names.includes(required), `${label} missing tool ${required}`);
     }
 
@@ -149,6 +150,18 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
 
     const continued = await client.callTool("fetch_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, offset: 500 });
     assertIncludes(continued, "Content range: characters 500-", `${label} fetch_url offset`);
+
+    const sessionCreated = await client.callTool("session_create", { name: "smoke", headers: { "X-Session-Test": "alpha" }, cookies: { token: "abc" }, referer: `${baseUrl}/ref` });
+    assertIncludes(sessionCreated, "Session saved:", `${label} session_create`);
+    assertIncludes(sessionCreated, "cookies=1 named cookie(s)", `${label} session_create`);
+    const echo = await client.callTool("fetch_json", { url: `${baseUrl}/echo`, session: "smoke" });
+    assertIncludes(echo, '"x-session-test": "alpha"', `${label} session header`);
+    assertIncludes(echo, '"cookie": "token=abc"', `${label} session cookie`);
+    assertIncludes(echo, `"referer": "${baseUrl}/ref"`, `${label} session referer`);
+    const sessionAfterFetch = await client.callTool("session_status", { name: "smoke" });
+    assertIncludes(sessionAfterFetch, `referer=${baseUrl}/echo`, `${label} session referer update`);
+    const cleared = await client.callTool("session_clear", { name: "smoke" });
+    assertIncludes(cleared, "Cleared session: smoke", `${label} session_clear`);
 
     const before = arxivHitCounter.count;
     const arxivFirst = await client.callTool("scholar_search", { query: "BERT", providers: ["arxiv"], count: 1 });
@@ -175,6 +188,15 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/page") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><html><head><title>Fixture</title></head><body><article><h1>Fixture Page</h1><p>${longText}</p><a href="/alpha">Alpha</a><a href="/beta">Beta</a><a href="https://example.org/out">External</a></article></body></html>`);
+    return;
+  }
+  if (url.pathname === "/echo") {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({
+      "x-session-test": req.headers["x-session-test"] || "",
+      cookie: req.headers.cookie || "",
+      referer: req.headers.referer || "",
+    }));
     return;
   }
   if (url.pathname === "/arxiv") {

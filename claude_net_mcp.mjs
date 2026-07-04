@@ -57,6 +57,33 @@ const TOOLS = [
     },
   },
   {
+    name: "session_create",
+    description: "Create or update a named HTTP session with default headers, cookies, referer, and its own cookie jar.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Session name." },
+        headers: { type: "object", additionalProperties: { type: "string" } },
+        cookies: { description: "Cookie header string or object of cookie name/value pairs." },
+        referer: { type: "string" },
+        user_agent: { type: "string" },
+        merge: { type: "boolean", default: true, description: "Merge with existing session instead of replacing it." },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "session_status",
+    description: "List named HTTP sessions or show one session with sensitive cookie values redacted.",
+    inputSchema: { type: "object", properties: { name: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "session_clear",
+    description: "Clear one named HTTP session, or all sessions when all=true.",
+    inputSchema: { type: "object", properties: { name: { type: "string" }, all: { type: "boolean", default: false } }, additionalProperties: false },
+  },
+  {
     name: "search_web",
     description: "Default web search. Executes the exact query, preserves provider order, and does not expand, filter, rerank, or resolve redirects.",
     inputSchema: {
@@ -139,6 +166,8 @@ const TOOLS = [
         headers: { type: "object", additionalProperties: { type: "string" } },
         cookies: { description: "Cookie header string or object of cookie name/value pairs." },
         cookie_jar: { type: "string", description: "Optional local cookie jar name to load and save between calls." },
+        session: { type: "string", description: "Named HTTP session to apply default headers/cookies/referer and persistent cookies." },
+        update_referer: { type: "boolean", default: true, description: "When session is set, update its referer to the final URL after a successful request." },
         body: { type: "string", description: "Optional request body for non-GET requests." },
         extract: { type: "string", enum: ["auto", "readable", "text", "markdown", "raw"], default: "auto" },
       },
@@ -158,6 +187,8 @@ const TOOLS = [
         headers: { type: "object", additionalProperties: { type: "string" } },
         cookies: { description: "Cookie header string or object of cookie name/value pairs." },
         cookie_jar: { type: "string" },
+        session: { type: "string" },
+        update_referer: { type: "boolean", default: true },
         timeout: { type: "number", minimum: 1, maximum: 60, default: 20 },
       },
       required: ["url"],
@@ -177,6 +208,8 @@ const TOOLS = [
         headers: { type: "object", additionalProperties: { type: "string" } },
         cookies: { description: "Cookie header string or object of cookie name/value pairs." },
         cookie_jar: { type: "string" },
+        session: { type: "string" },
+        update_referer: { type: "boolean", default: true },
         body: { type: "string" },
       },
       required: ["url"],
@@ -195,6 +228,8 @@ const TOOLS = [
         headers: { type: "object", additionalProperties: { type: "string" } },
         cookies: { description: "Cookie header string or object of cookie name/value pairs." },
         cookie_jar: { type: "string" },
+        session: { type: "string" },
+        update_referer: { type: "boolean", default: true },
       },
       required: ["url"],
       additionalProperties: false,
@@ -212,6 +247,8 @@ const TOOLS = [
         headers: { type: "object", additionalProperties: { type: "string" } },
         cookies: { description: "Cookie header string or object of cookie name/value pairs." },
         cookie_jar: { type: "string" },
+        session: { type: "string" },
+        update_referer: { type: "boolean", default: true },
         extractor: { type: "string", enum: ["auto", "pdftotext", "none"], default: "auto", description: "PDF extraction mode. Use none to only verify/download the PDF." },
       },
       required: ["url"],
@@ -376,6 +413,161 @@ async function cookieJarFile(name) {
   const dir = process.env.CLAUDE_NET_COOKIE_DIR || path.join(os.homedir(), ".claude-code-net-tools", "cookies");
   await fs.mkdir(dir, { recursive: true });
   return path.join(dir, `${safeCookieJarName(name)}.txt`);
+}
+
+function sessionName(name) {
+  const raw = String(name || "").trim();
+  if (!raw) throw new Error("session name is required");
+  return raw.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 80) || "default";
+}
+
+function sessionCookieJarName(name) {
+  return `session_${sessionName(name)}`;
+}
+
+function sessionDir() {
+  return process.env.CLAUDE_NET_SESSION_DIR || path.join(os.homedir(), ".claude-code-net-tools", "sessions");
+}
+
+async function sessionFile(name) {
+  const dir = sessionDir();
+  await fs.mkdir(dir, { recursive: true });
+  return path.join(dir, `${sessionName(name)}.json`);
+}
+
+function mergeCookies(base, extra) {
+  if (!base) return extra || null;
+  if (!extra) return base;
+  if (typeof base === "string" || typeof extra === "string") return [cookieHeader(base), cookieHeader(extra)].filter(Boolean).join("; ");
+  return { ...(base || {}), ...(extra || {}) };
+}
+
+async function readSession(name, { optional = false } = {}) {
+  if (!name) return null;
+  const file = await sessionFile(name);
+  try {
+    const data = JSON.parse(await fs.readFile(file, "utf8"));
+    return {
+      name: sessionName(data.name || name),
+      createdAt: data.createdAt || "",
+      updatedAt: data.updatedAt || "",
+      headers: normalizeHeaders(data.headers || {}),
+      cookies: data.cookies || null,
+      referer: sanitizeHeaderValue(data.referer || ""),
+      cookieJar: data.cookieJar || sessionCookieJarName(name),
+    };
+  } catch (error) {
+    if (optional && error.code === "ENOENT") return null;
+    if (error.code === "ENOENT") throw new Error(`Unknown session: ${name}`);
+    throw error;
+  }
+}
+
+async function writeSession(data) {
+  const name = sessionName(data.name);
+  const now = new Date().toISOString();
+  const previous = await readSession(name, { optional: true });
+  const session = {
+    name,
+    createdAt: data.createdAt || previous?.createdAt || now,
+    updatedAt: now,
+    headers: normalizeHeaders(data.headers || {}),
+    cookies: data.cookies || null,
+    referer: sanitizeHeaderValue(data.referer || ""),
+    cookieJar: data.cookieJar || previous?.cookieJar || sessionCookieJarName(name),
+  };
+  await fs.writeFile(await sessionFile(name), JSON.stringify(session, null, 2), "utf8");
+  await cookieJarFile(session.cookieJar);
+  return session;
+}
+
+function redactCookieInfo(cookies) {
+  if (!cookies) return "none";
+  if (typeof cookies === "string") return cookieHeader(cookies) ? "string" : "none";
+  if (typeof cookies === "object" && !Array.isArray(cookies)) return `${Object.keys(cookies).length} named cookie(s)`;
+  return "unsupported";
+}
+
+function formatSessionStatus(session) {
+  const headerNames = Object.keys(session.headers || {}).sort();
+  return [
+    `- ${session.name}`,
+    `updated=${session.updatedAt || "unknown"}`,
+    `headers=${headerNames.length ? headerNames.join(",") : "none"}`,
+    `cookies=${redactCookieInfo(session.cookies)}`,
+    `referer=${session.referer || "none"}`,
+    `cookieJar=${session.cookieJar}`,
+  ].join("; ");
+}
+
+async function sessionCreate(args = {}) {
+  const name = sessionName(args?.name);
+  const merge = args?.merge !== false;
+  const previous = merge ? await readSession(name, { optional: true }) : null;
+  const headers = { ...(previous?.headers || {}), ...normalizeHeaders(args?.headers || {}) };
+  if (args?.referer) headers.Referer = sanitizeHeaderValue(args.referer);
+  if (args?.user_agent) headers["User-Agent"] = sanitizeHeaderValue(args.user_agent);
+  const session = await writeSession({
+    name,
+    createdAt: previous?.createdAt,
+    headers,
+    cookies: mergeCookies(previous?.cookies, args?.cookies || null),
+    referer: sanitizeHeaderValue(args?.referer || previous?.referer || ""),
+    cookieJar: previous?.cookieJar || sessionCookieJarName(name),
+  });
+  return ["Session saved:", formatSessionStatus(session), "", "Cookie values are stored locally but redacted from status output."].join("\n");
+}
+
+async function sessionStatus(args = {}) {
+  if (args?.name) {
+    const session = await readSession(args.name);
+    return ["Session status:", formatSessionStatus(session)].join("\n");
+  }
+  const dir = sessionDir();
+  let files = [];
+  try { files = (await fs.readdir(dir)).filter((file) => file.endsWith(".json")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  const sessions = [];
+  for (const file of files.sort()) {
+    try { sessions.push(await readSession(file.replace(/\.json$/i, ""))); } catch { /* skip invalid session files */ }
+  }
+  if (!sessions.length) return "No sessions found.";
+  return ["Sessions:", ...sessions.map(formatSessionStatus)].join("\n");
+}
+
+async function sessionClear(args = {}) {
+  if (args?.all) {
+    const dir = sessionDir();
+    let count = 0;
+    try {
+      for (const file of await fs.readdir(dir)) {
+        if (!file.endsWith(".json")) continue;
+        const name = file.replace(/\.json$/i, "");
+        await fs.rm(path.join(dir, file), { force: true });
+        await fs.rm(await cookieJarFile(sessionCookieJarName(name)), { force: true });
+        count += 1;
+      }
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    return `Cleared ${count} session(s).`;
+  }
+  const name = sessionName(args?.name);
+  await fs.rm(await sessionFile(name), { force: true });
+  await fs.rm(await cookieJarFile(sessionCookieJarName(name)), { force: true });
+  return `Cleared session: ${name}`;
+}
+
+async function sessionRequestContext(args = {}) {
+  const session = args?.session ? await readSession(args.session) : null;
+  if (!session) return { session: null, headers: {}, cookies: null, cookieJar: "" };
+  const headers = { ...(session.headers || {}) };
+  if (session.referer && !Object.keys(headers).some((key) => key.toLowerCase() === "referer")) headers.Referer = session.referer;
+  return { session, headers, cookies: session.cookies || null, cookieJar: session.cookieJar || sessionCookieJarName(session.name) };
+}
+
+async function updateSessionReferer(args = {}, finalUrl = "") {
+  if (!args?.session || args?.update_referer === false || !finalUrl) return;
+  const session = await readSession(args.session);
+  session.referer = finalUrl;
+  await writeSession(session);
 }
 
 function requestHeaders(headers = {}, cookies = null) {
@@ -1439,21 +1631,23 @@ function extractLinksFromHtml(html, baseUrl, limit = 50, sameDomain = false) {
   return rows;
 }
 
-function requestArgs(args = {}, defaults = {}) {
+async function requestArgs(args = {}, defaults = {}) {
+  const sessionContext = await sessionRequestContext(args);
   return {
     method: String(args?.method || defaults.method || "GET").toUpperCase(),
-    headers: { ...(defaults.headers || {}), ...(args?.headers || {}) },
+    headers: { ...(defaults.headers || {}), ...(sessionContext.headers || {}), ...(args?.headers || {}) },
     body: args?.body ?? defaults.body ?? null,
     timeout: Math.max(1, Math.min(Number(args?.timeout) || defaults.timeout || 20, defaults.maxTimeout || 60)),
-    cookies: args?.cookies || null,
-    cookieJar: args?.cookie_jar || "",
+    cookies: mergeCookies(sessionContext.cookies, args?.cookies || null),
+    cookieJar: args?.cookie_jar || sessionContext.cookieJar || "",
   };
 }
 
 async function fetchUrl(args) {
   const url = ensureUrl(args?.url);
   const maxBytes = Math.max(100000, Math.min(Number(args?.max_bytes) || DEFAULT_FETCH_BYTES, 50000000));
-  const response = await curlRequest(url, { ...requestArgs(args), maxBytes });
+  const response = await curlRequest(url, { ...(await requestArgs(args)), maxBytes });
+  await updateSessionReferer(args, response.finalUrl);
   return formatFetchedContent(response, args);
 }
 
@@ -1461,7 +1655,8 @@ async function extractLinks(args) {
   const url = ensureUrl(args?.url);
   const limit = Math.max(1, Math.min(Number(args?.limit) || 50, 200));
   const maxBytes = Math.max(100000, Math.min(Number(args?.max_bytes) || DEFAULT_FETCH_BYTES, 50000000));
-  const response = await curlRequest(url, { ...requestArgs(args), maxBytes });
+  const response = await curlRequest(url, { ...(await requestArgs(args)), maxBytes });
+  await updateSessionReferer(args, response.finalUrl);
   const links = extractLinksFromHtml(response.text, response.finalUrl, limit, Boolean(args?.same_domain));
   if (!links.length) return `No links found for ${response.finalUrl}.`;
   const lines = [`Links for: ${response.finalUrl}`, `Route: ${response.route}`, ""];
@@ -1475,7 +1670,8 @@ async function extractLinks(args) {
 async function fetchJson(args) {
   const url = ensureUrl(args?.url);
   const maxChars = Math.max(500, Math.min(Number(args?.max_chars) || 30000, 100000));
-  const response = await curlRequest(url, { ...requestArgs(args, { headers: { Accept: "application/json,*/*;q=0.5" } }), maxBytes: 2000000 });
+  const response = await curlRequest(url, { ...(await requestArgs(args, { headers: { Accept: "application/json,*/*;q=0.5" } })), maxBytes: 2000000 });
+  await updateSessionReferer(args, response.finalUrl);
   let parsed;
   try { parsed = JSON.parse(response.text); } catch (error) { throw new Error(`Response is not valid JSON: ${error.message}`); }
   const body = JSON.stringify(parsed, null, 2).slice(0, maxChars);
@@ -1485,7 +1681,8 @@ async function fetchJson(args) {
 async function fetchRss(args) {
   const url = ensureUrl(args?.url);
   const count = Math.max(1, Math.min(Number(args?.count) || 20, 50));
-  const response = await curlRequest(url, { ...requestArgs(args, { headers: { Accept: "application/rss+xml,application/atom+xml,application/xml,text/xml,*/*;q=0.5" } }), maxBytes: 2000000 });
+  const response = await curlRequest(url, { ...(await requestArgs(args, { headers: { Accept: "application/rss+xml,application/atom+xml,application/xml,text/xml,*/*;q=0.5" } })), maxBytes: 2000000 });
+  await updateSessionReferer(args, response.finalUrl);
   return [`URL: ${response.finalUrl}`, `Route: ${response.route}`, response.status ? `Status: ${response.status}` : "", `Content-Type: ${response.contentType || "unknown"}`, "", formatFeed(parseFeedEntries(response.text, count), response.finalUrl, count)].filter(Boolean).join("\n");
 }
 
@@ -1540,7 +1737,8 @@ async function fetchPdf(args) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ccnet-pdf-"));
   const pdfPath = path.join(tmpDir, "source.pdf");
   try {
-    const response = await curlDownload(url, pdfPath, { ...requestArgs(args, { headers: { Accept: "application/pdf,*/*;q=0.5" }, timeout, maxTimeout: 120 }), maxBytes: 50000000 });
+    const response = await curlDownload(url, pdfPath, { ...(await requestArgs(args, { headers: { Accept: "application/pdf,*/*;q=0.5" }, timeout, maxTimeout: 120 })), maxBytes: 50000000 });
+    await updateSessionReferer(args, response.finalUrl);
     const baseLines = [`URL: ${response.finalUrl}`, `Route: ${response.route}`, response.status ? `Status: ${response.status}` : "", `Content-Type: ${response.contentType || "unknown"}`].filter(Boolean);
     if (!httpStatusOk(response.status)) {
       return [...baseLines, "", `PDF fetch failed: HTTP ${response.status}. The response was not processed as PDF.`].join("\n");
@@ -1582,6 +1780,9 @@ async function callTool(name, args) {
   if (name === "proxy_status") return proxyStatus(args);
   if (name === "pdf_status") return pdfStatus(args);
   if (name === "search_status") return searchStatus(args);
+  if (name === "session_create") return sessionCreate(args);
+  if (name === "session_status") return sessionStatus(args);
+  if (name === "session_clear") return sessionClear(args);
   if (name === "search_web") return searchWeb(args);
   if (name === "search_web_focused") return searchWebFocused(args);
   if (name === "scholar_search") return scholarSearch(args);
