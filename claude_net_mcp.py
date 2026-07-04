@@ -32,7 +32,11 @@ SERVER_VERSION = "0.7.0"
 DEFAULT_TIMEOUT = float(os.environ.get("CLAUDE_NET_TIMEOUT", "20"))
 SEARCH_TIMEOUT = float(os.environ.get("CLAUDE_NET_SEARCH_TIMEOUT", "15"))
 MAX_FETCH_BYTES = int(os.environ.get("CLAUDE_NET_MAX_FETCH_BYTES", "900000"))
-COMMON_LOCAL_PROXY_PORTS = (7890, 7897, 7899, 10809, 10808, 1080, 8080, 20171, 2080)
+DEFAULT_FETCH_MAX_CHARS = max(500, min(int(os.environ.get("CLAUDE_NET_DEFAULT_MAX_CHARS", "12000")), 200000))
+MAX_OUTPUT_CHARS = max(1000, min(int(os.environ.get("CLAUDE_NET_MAX_OUTPUT_CHARS", "200000")), 1000000))
+DEFAULT_LOCAL_PROXY_PORTS = (7890, 7897, 7899, 10809, 10808, 1080, 8080, 20171, 2080)
+ARXIV_COOLDOWN_SECONDS = max(1.0, min(float(os.environ.get("CLAUDE_NET_ARXIV_COOLDOWN_MS", "5000")) / 1000.0, 60.0))
+ARXIV_RATE_LIMITED_UNTIL = 0.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 TRANSPORT_MODE = ""
 PROVIDER_FAIL_LIMIT = max(1, min(int(os.environ.get("CLAUDE_NET_PROVIDER_FAIL_LIMIT", "3")), 10))
@@ -189,6 +193,22 @@ def _env_proxy_candidates() -> list[str]:
     return values
 
 
+def _local_proxy_ports() -> tuple[int, ...]:
+    raw = os.environ.get("CLAUDE_NET_PROXY_PORTS", "").strip()
+    values = re.split(r"[;,\s]+", raw) if raw else [str(port) for port in DEFAULT_LOCAL_PROXY_PORTS]
+    ports: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        try:
+            port = int(value)
+        except ValueError:
+            continue
+        if 1 <= port <= 65535 and port not in seen:
+            seen.add(port)
+            ports.append(port)
+    return tuple(ports or DEFAULT_LOCAL_PROXY_PORTS)
+
+
 def _proxy_candidates() -> list[str | None]:
     pinned = os.environ.get("CLAUDE_NET_PROXY", "").strip()
     if pinned.lower() in {"direct", "none", "off", "0"}:
@@ -198,7 +218,7 @@ def _proxy_candidates() -> list[str | None]:
 
     candidates: list[str | None] = []
     candidates.extend(_env_proxy_candidates())
-    for port in COMMON_LOCAL_PROXY_PORTS:
+    for port in _local_proxy_ports():
         proxy = f"http://127.0.0.1:{port}"
         if _port_open("127.0.0.1", port):
             candidates.append(proxy)
@@ -312,6 +332,16 @@ def _request_url(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int =
                         except Exception:
                             pass
                 return response.geturl(), response.headers.get("content-type", ""), b"".join(chunks), label, getattr(response, "status", 0)
+        except urllib.error.HTTPError as exc:
+            chunks: list[bytes] = []
+            remaining = max_bytes
+            while remaining > 0:
+                chunk = exc.read(min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return exc.geturl(), exc.headers.get("content-type", ""), b"".join(chunks), label, int(exc.code)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{label}: {exc}")
     raise urllib.error.URLError("; ".join(errors))
@@ -849,45 +879,34 @@ def _parse_arxiv_entries(text: str, count: int) -> list[dict[str, str]]:
     return rows
 
 
+def _extract_arxiv_id(query: str) -> str:
+    text = re.sub(r"https?://arxiv\.org/(abs|pdf)/", "", _normalize_space(query), flags=re.I)
+    text = re.sub(r"\.pdf$", "", text, flags=re.I)
+    match = re.search(r"(?:^|\b)(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)(?:\b|$)", text, flags=re.I)
+    return match.group(1) if match else ""
+
+
 def _search_arxiv(query: str, count: int) -> list[dict[str, str]]:
+    global ARXIV_RATE_LIMITED_UNTIL
+    now = time.time()
+    if ARXIV_RATE_LIMITED_UNTIL > now:
+        wait = int(ARXIV_RATE_LIMITED_UNTIL - now + 0.999)
+        raise ValueError(f"arXiv recently returned HTTP 429; retry after about {wait}s or put arxiv last/disable it")
     cleaned = _normalize_space(query).replace('"', "")
-    attempts: list[tuple[str, str, str]] = []
-
-    def add_attempt(search_query: str, sort_by: str = "", sort_order: str = "") -> None:
-        attempt = (search_query, sort_by, sort_order)
-        if attempt not in attempts:
-            attempts.append(attempt)
-
-    if cleaned:
-        add_attempt(f'ti:"{cleaned}"')
-    if _is_short_scholar_query(cleaned):
-        add_attempt(f'ti:"{cleaned}"', "submittedDate", "ascending")
-    if " " in cleaned:
-        add_attempt(f'all:"{cleaned}"')
-    add_attempt("all:" + query)
-    notes: list[str] = []
-    rows: list[dict[str, str]] = []
-    for search_query, sort_by, sort_order in attempts:
-        try:
-            params = {"search_query": search_query, "start": 0, "max_results": count}
-            if sort_by:
-                params["sortBy"] = sort_by
-            if sort_order:
-                params["sortOrder"] = sort_order
-            _, content_type, body, _, _ = _request_url("https://export.arxiv.org/api/query?" + urllib.parse.urlencode(params), timeout=20, max_bytes=1800000, headers={"Accept": "application/atom+xml,application/xml"})
-            found = _parse_arxiv_entries(_decode_body(body, content_type), count)
-            if found:
-                rows = _dedupe(rows + found)
-            else:
-                notes.append(f"{search_query}: 0 result(s)")
-        except Exception as exc:  # noqa: BLE001
-            notes.append(f"{search_query}: {exc}")
-    if rows:
-        return _rank_scholar_rows(rows, query)
-    if notes:
-        raise ValueError("; ".join(notes))
-    return []
-
+    arxiv_id = _extract_arxiv_id(cleaned)
+    if arxiv_id:
+        params: dict[str, Any] = {"id_list": arxiv_id, "start": 0, "max_results": count}
+        label = "id_list:" + arxiv_id
+    else:
+        label = f'ti:"{cleaned}"'
+        params = {"search_query": label, "start": 0, "max_results": count}
+    _, content_type, body, _, status = _request_url("https://export.arxiv.org/api/query?" + urllib.parse.urlencode(params), timeout=20, max_bytes=1800000, headers={"Accept": "application/atom+xml,application/xml"})
+    if int(status or 0) == 429:
+        ARXIV_RATE_LIMITED_UNTIL = time.time() + ARXIV_COOLDOWN_SECONDS
+        raise ValueError(f"HTTP 429 rate limited for {label}; arXiv skipped without extra retry")
+    if status and not (200 <= int(status) < 300):
+        raise ValueError(f"HTTP {status} for {label}")
+    return _rank_scholar_rows(_parse_arxiv_entries(_decode_body(body, content_type), count), query)
 
 def _scholar_provider(provider: str, query: str, count: int) -> list[dict[str, str]]:
     name = _normalize_provider_name(provider)
@@ -900,24 +919,40 @@ def _scholar_provider(provider: str, query: str, count: int) -> list[dict[str, s
     raise ValueError(f"Unknown scholar provider: {provider}")
 
 
+def _scholar_provider_order(override: Any) -> list[str]:
+    if isinstance(override, list) and override:
+        return _dedupe_providers(override)
+    env = os.environ.get("CLAUDE_NET_SCHOLAR_PROVIDERS", "").strip()
+    if env:
+        return _dedupe_providers(_split_list(env))
+    search_env = [name for name in (_normalize_provider_name(item) for item in _split_list(os.environ.get("CLAUDE_NET_SEARCH_PROVIDERS", ""))) if name in {"crossref", "semantic_scholar", "arxiv"}]
+    if search_env:
+        return _dedupe_providers(search_env)
+    return ["crossref", "semantic_scholar", "arxiv"]
+
+
 def scholar_search(arguments: dict[str, Any]) -> str:
     query = str(arguments.get("query", "")).strip()
     if not query:
         raise ValueError("query is required")
     count = max(1, min(int(arguments.get("count", 5)), 10))
-    providers = _dedupe_providers(arguments.get("providers") if isinstance(arguments.get("providers"), list) and arguments.get("providers") else ["arxiv", "semantic_scholar", "crossref"])
+    providers = _scholar_provider_order(arguments.get("providers"))
     candidate_count = max(count, 30 if _is_short_scholar_query(query) else 10)
+    disabled = _disabled_provider_set()
     notes: list[str] = []
     rows: list[dict[str, str]] = []
     for provider in providers:
+        name = _normalize_provider_name(provider)
+        if name in disabled:
+            notes.append(f"{name}: skipped (disabled by CLAUDE_NET_DISABLED_PROVIDERS)")
+            continue
         try:
-            found = _scholar_provider(provider, query, candidate_count)
-            notes.append(f"{provider}: {len(found)} result(s)")
+            found = _scholar_provider(name, query, candidate_count)
+            notes.append(f"{name}: {len(found)} result(s)")
             rows = _dedupe(rows + found)
         except Exception as exc:  # noqa: BLE001
-            notes.append(f"{provider}: {exc}")
+            notes.append(f"{name}: {exc}")
     return _format_result_rows("Scholar results for: " + query, _rank_scholar_rows(rows, query)[:count], notes)
-
 
 def _search_npm_packages(query: str, count: int) -> list[dict[str, str]]:
     _, content_type, body, _, _ = _request_url("https://registry.npmjs.org/-/v1/search?" + urllib.parse.urlencode({"text": query, "size": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
@@ -1306,9 +1341,14 @@ def _format_feed(entries: list[dict[str, str]], source_url: str, count: int) -> 
 
 
 def _format_fetched_content(final_url: str, content_type: str, body: bytes, route: str, status: int, arguments: dict[str, Any]) -> str:
-    max_chars = max(500, min(int(arguments.get("max_chars", 12000)), 100000))
+    max_chars = max(500, min(int(arguments.get("max_chars", DEFAULT_FETCH_MAX_CHARS)), MAX_OUTPUT_CHARS))
+    offset = max(0, min(int(arguments.get("offset", 0)), 1000000000))
+    include_links = _as_bool(arguments.get("include_links"))
+    link_limit = max(1, min(int(arguments.get("link_limit", 50)), 200))
+    same_domain_links = _as_bool(arguments.get("same_domain_links"))
     extract = str(arguments.get("extract", "auto")).lower()
     text = _decode_body(body, content_type)
+    is_html = "html" in content_type.lower() or "<html" in text[:1000].lower() or "<!doctype html" in text[:1000].lower()
     lines = [f"URL: {final_url}", f"Route: {route}"]
     if status:
         lines.append(f"Status: {status}")
@@ -1324,7 +1364,7 @@ def _format_fetched_content(final_url: str, content_type: str, body: bytes, rout
     elif extract != "raw" and _looks_feed(text, content_type):
         output = _format_feed(_parse_feed_entries(text, 50), final_url, min(50, max(1, max_chars // 500)))
         lines.append("Format: RSS/Atom")
-    elif extract != "raw" and ("html" in content_type.lower() or "<html" in text[:1000].lower()):
+    elif extract != "raw" and is_html:
         title = _html_title(text)
         if extract == "markdown":
             readable = _readable_html(text)
@@ -1352,10 +1392,22 @@ def _format_fetched_content(final_url: str, content_type: str, body: bytes, rout
         lines.append("Format: raw")
     if title:
         lines.append(f"Title: {title}")
-    lines.append("")
-    lines.append((output or "(No extractable text.)")[:max_chars])
+    full_output = output or "(No extractable text.)"
+    start = min(offset, len(full_output))
+    end = min(start + max_chars, len(full_output))
+    lines.append(f"Content range: characters {start}-{end} of {len(full_output)}")
+    if end < len(full_output):
+        lines.append(f"next_offset: {end}")
+    lines.extend(["", full_output[start:end] or "(No extractable text.)"])
+    if end < len(full_output):
+        lines.extend(["", f"Continue with fetch_url offset={end} max_chars={max_chars}."])
+    if include_links:
+        links = _extract_links_from_html(text, final_url, link_limit, same_domain_links) if is_html else []
+        lines.extend(["", f"Links{' (same domain)' if same_domain_links else ''}: {len(links)}"])
+        for index, link in enumerate(links, start=1):
+            lines.append(f"{index}. {link.get('text') or '(no text)'}")
+            lines.append(f"   URL: {link['url']}")
     return "\n".join(lines)
-
 
 def _extract_links_from_html(text: str, base_url: str, limit: int, same_domain: bool) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -1382,14 +1434,16 @@ def _extract_links_from_html(text: str, base_url: str, limit: int, same_domain: 
 
 def fetch_url(arguments: dict[str, Any]) -> str:
     url = _ensure_url(arguments.get("url"))
-    final_url, content_type, body, route, status = _request_url(url, max_bytes=1200000, **_request_options(arguments))
+    max_bytes = max(100000, min(int(arguments.get("max_bytes", MAX_FETCH_BYTES)), 50000000))
+    final_url, content_type, body, route, status = _request_url(url, max_bytes=max_bytes, **_request_options(arguments))
     return _format_fetched_content(final_url, content_type, body, route, status, arguments)
 
 
 def extract_links(arguments: dict[str, Any]) -> str:
     url = _ensure_url(arguments.get("url"))
     limit = max(1, min(int(arguments.get("limit", 50)), 200))
-    final_url, content_type, body, route, status = _request_url(url, max_bytes=1200000, **_request_options(arguments))
+    max_bytes = max(100000, min(int(arguments.get("max_bytes", MAX_FETCH_BYTES)), 50000000))
+    final_url, content_type, body, route, status = _request_url(url, max_bytes=max_bytes, **_request_options(arguments))
     text = _decode_body(body, content_type)
     links = _extract_links_from_html(text, final_url, limit, _as_bool(arguments.get("same_domain")))
     if not links:
@@ -1518,7 +1572,7 @@ def proxy_status(arguments: dict[str, Any]) -> str:
     lines.append("")
     lines.append("Default providers (non-CJK): " + ", ".join(_provider_order("test", [])))
     lines.append("Default providers (CJK): " + ", ".join(_provider_order("\u6d4b\u8bd5", [])))
-    lines.append("Set CLAUDE_NET_PROXY=http://127.0.0.1:7890 to force a local VPN/proxy, or CLAUDE_NET_PROXY=direct to bypass proxies.")
+    lines.append("Auto proxy ports: " + ", ".join(str(port) for port in _local_proxy_ports()) + ". Set CLAUDE_NET_PROXY to force one route, CLAUDE_NET_PROXY_PORTS to change auto-detect ports, or CLAUDE_NET_PROXY=direct to bypass proxies.")
     return "\n".join(lines)
 
 
@@ -1526,11 +1580,11 @@ TOOLS = [
     {"name": "proxy_status", "description": "Show which local VPN/proxy routes this server will try before direct connection.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "pdf_status", "description": "Check the local PDF text extraction command used by fetch_pdf.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "search_status", "description": "Show search provider availability, recent failures, and optional live health probes.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "Claude Code MCP"}, "providers": {"type": "array", "items": {"type": "string"}}, "live": {"type": "boolean", "default": False, "description": "When true, run a one-result live probe for available providers."}}}},
-    {"name": "search_web", "description": "Basic public web search. Preserves provider order and leaves ranking/filtering to the LLM.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
-    {"name": "search_web_focused", "description": "Assisted web search with query expansion, optional relevance filtering, reranking, and redirect resolution.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "expand_query": {"type": "boolean", "default": True, "description": "For CJK questions, also try a cleaned core query."}, "strict_relevance": {"type": "boolean", "default": True, "description": "Drop results that do not contain the core query."}, "rerank": {"type": "boolean", "default": False, "description": "When true, apply heuristic result re-ranking."}, "resolve_redirects": {"type": "boolean", "default": False, "description": "Resolve known search-engine redirect URLs to their final target URLs."}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
+    {"name": "search_web", "description": "Default web search. Executes the exact query, preserves provider order, and does not expand, filter, rerank, or resolve redirects.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
+    {"name": "search_web_focused", "description": "Opt-in recovery search for noisy results. Can expand CJK core queries, filter relevance, rerank, and resolve redirects when explicitly requested.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}}, "expand_query": {"type": "boolean", "default": True, "description": "For CJK questions, also try a cleaned core query."}, "strict_relevance": {"type": "boolean", "default": True, "description": "Drop results that do not contain the core query."}, "rerank": {"type": "boolean", "default": False, "description": "When true, apply heuristic result re-ranking."}, "resolve_redirects": {"type": "boolean", "default": False, "description": "Resolve known search-engine redirect URLs to their final target URLs."}, "allowed_domains": {"type": "array", "items": {"type": "string"}}, "blocked_domains": {"type": "array", "items": {"type": "string"}}}, "required": ["query"]}},
     {"name": "scholar_search", "description": "Search academic papers through specialized providers such as Semantic Scholar, Crossref, and arXiv.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "providers": {"type": "array", "items": {"type": "string"}, "description": "semantic_scholar, crossref, arxiv"}}, "required": ["query"]}},
     {"name": "package_search", "description": "Search developer package and repository indexes such as npm, PyPI, and GitHub repositories.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}, "ecosystem": {"type": "string", "enum": ["all", "npm", "pypi", "github"], "default": "all"}, "providers": {"type": "array", "items": {"type": "string"}, "description": "npm, pypi, github"}}, "required": ["query"]}},
-    {"name": "fetch_url", "description": "Fetch a URL and return readable text, JSON, RSS, or raw content.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 100000, "default": 12000}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "body": {"type": "string"}, "extract": {"type": "string", "enum": ["auto", "readable", "text", "markdown", "raw"], "default": "auto"}}, "required": ["url"]}},
+    {"name": "fetch_url", "description": "Fetch one URL and return content. Supports offset paging for long text and optional link extraction in the same call.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": MAX_OUTPUT_CHARS, "default": DEFAULT_FETCH_MAX_CHARS, "description": "Maximum extracted characters to return for this page."}, "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Character offset into the extracted content. Use next_offset to continue long pages."}, "max_bytes": {"type": "integer", "minimum": 100000, "maximum": 50000000, "default": MAX_FETCH_BYTES, "description": "Maximum response bytes to download before extraction."}, "include_links": {"type": "boolean", "default": False, "description": "Also extract page links from the fetched HTML."}, "link_limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "same_domain_links": {"type": "boolean", "default": False}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "body": {"type": "string"}, "extract": {"type": "string", "enum": ["auto", "readable", "text", "markdown", "raw"], "default": "auto"}}, "required": ["url"]}},
     {"name": "extract_links", "description": "Fetch a page and extract normalized links from its HTML.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "same_domain": {"type": "boolean", "default": False}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}}, "required": ["url"]}},
     {"name": "fetch_json", "description": "Fetch a JSON endpoint and pretty-print parsed JSON.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 100000, "default": 30000}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}, "body": {"type": "string"}}, "required": ["url"]}},
     {"name": "fetch_rss", "description": "Fetch an RSS or Atom feed and return feed entries.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}, "timeout": {"type": "number", "minimum": 1, "maximum": 60, "default": DEFAULT_TIMEOUT}, "headers": {"type": "object", "additionalProperties": {"type": "string"}}, "cookies": {"description": "Cookie header string or object of cookie name/value pairs."}, "cookie_jar": {"type": "string"}}, "required": ["url"]}},

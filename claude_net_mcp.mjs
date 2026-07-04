@@ -10,11 +10,16 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const SERVER_NAME = "claude-code-net-tools";
 const SERVER_VERSION = "0.7.0";
-const COMMON_LOCAL_PROXY_PORTS = [7890, 7897, 7899, 10809, 10808, 1080, 8080, 20171, 2080];
+const DEFAULT_LOCAL_PROXY_PORTS = [7890, 7897, 7899, 10809, 10808, 1080, 8080, 20171, 2080];
+const DEFAULT_FETCH_MAX_CHARS = Math.max(500, Math.min(Number(process.env.CLAUDE_NET_DEFAULT_MAX_CHARS) || 12000, 200000));
+const MAX_OUTPUT_CHARS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_MAX_OUTPUT_CHARS) || 200000, 1000000));
+const DEFAULT_FETCH_BYTES = Math.max(100000, Math.min(Number(process.env.CLAUDE_NET_MAX_FETCH_BYTES) || 1200000, 50000000));
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const CURL = process.env.CLAUDE_NET_CURL || "curl.exe";
 const PROVIDER_FAIL_LIMIT = Math.max(1, Math.min(Number(process.env.CLAUDE_NET_PROVIDER_FAIL_LIMIT) || 3, 10));
 const PROVIDER_STATS = new Map();
+const ARXIV_COOLDOWN_MS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_ARXIV_COOLDOWN_MS) || 5000, 60000));
+let arxivRateLimitedUntil = 0;
 const SEARCH_PROVIDER_META = {
   kimi: { kind: "api", env: ["KIMI_API_KEY", "MOONSHOT_API_KEY"], description: "Kimi/Moonshot web search API" },
   minimax: { kind: "api", env: ["MINIMAX_API_KEY"], description: "MiniMax web search API" },
@@ -45,7 +50,7 @@ const TOOLS = [
   },
   {
     name: "search_web",
-    description: "Basic public web search. Preserves provider order and leaves ranking/filtering to the LLM.",
+    description: "Default web search. Executes the exact query, preserves provider order, and does not expand, filter, rerank, or resolve redirects.",
     inputSchema: {
       type: "object",
       properties: {
@@ -61,7 +66,7 @@ const TOOLS = [
   },
   {
     name: "search_web_focused",
-    description: "Assisted web search with query expansion, optional relevance filtering, reranking, and redirect resolution.",
+    description: "Opt-in recovery search for noisy results. Can expand CJK core queries, filter relevance, rerank, and resolve redirects when explicitly requested.",
     inputSchema: {
       type: "object",
       properties: {
@@ -110,12 +115,17 @@ const TOOLS = [
   },
   {
     name: "fetch_url",
-    description: "Fetch a URL through local VPN/proxy and return readable text, JSON, RSS, or raw content.",
+    description: "Fetch one URL and return content. Supports offset paging for long text and optional link extraction in the same call.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "URL to fetch" },
-        max_chars: { type: "number", minimum: 500, maximum: 100000, default: 12000 },
+        max_chars: { type: "number", minimum: 500, maximum: MAX_OUTPUT_CHARS, default: DEFAULT_FETCH_MAX_CHARS, description: "Maximum extracted characters to return for this page." },
+        offset: { type: "number", minimum: 0, default: 0, description: "Character offset into the extracted content. Use the reported next_offset to continue long pages." },
+        max_bytes: { type: "number", minimum: 100000, maximum: 50000000, default: DEFAULT_FETCH_BYTES, description: "Maximum response bytes to download before extraction." },
+        include_links: { type: "boolean", default: false, description: "Also extract page links from the fetched HTML." },
+        link_limit: { type: "number", minimum: 1, maximum: 200, default: 50 },
+        same_domain_links: { type: "boolean", default: false, description: "When include_links is true, return only same-domain links." },
         timeout: { type: "number", minimum: 1, maximum: 60, default: 20 },
         method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], default: "GET" },
         headers: { type: "object", additionalProperties: { type: "string" } },
@@ -304,7 +314,7 @@ async function proxyCandidates() {
       if (!local || await isPortOpen(u.hostname, port)) candidates.push(value);
     } catch {}
   }
-  for (const port of COMMON_LOCAL_PROXY_PORTS) {
+  for (const port of localProxyPorts()) {
     if (await isPortOpen("127.0.0.1", port)) candidates.push(`http://127.0.0.1:${port}`);
   }
   candidates.push(null);
@@ -369,6 +379,20 @@ function requestHeaders(headers = {}, cookies = null) {
   const directCookies = cookieHeader(cookies);
   if (directCookies) finalHeaders.Cookie = finalHeaders.Cookie ? `${finalHeaders.Cookie}; ${directCookies}` : directCookies;
   return finalHeaders;
+}
+
+function localProxyPorts() {
+  const raw = String(process.env.CLAUDE_NET_PROXY_PORTS || "").trim();
+  const values = raw ? raw.split(/[;,\s]+/) : DEFAULT_LOCAL_PROXY_PORTS;
+  const ports = [];
+  const seen = new Set();
+  for (const value of values) {
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || seen.has(port)) continue;
+    seen.add(port);
+    ports.push(port);
+  }
+  return ports.length ? ports : DEFAULT_LOCAL_PROXY_PORTS;
 }
 
 function splitCurlMeta(stdout) {
@@ -863,36 +887,32 @@ function parseArxivEntries(xml, count) {
   return rows;
 }
 
+function extractArxivId(query) {
+  const text = normalizeSpace(query).replace(/https?:\/\/arxiv\.org\/(abs|pdf)\//i, "").replace(/\.pdf$/i, "");
+  const match = text.match(/(?:^|\b)(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)(?:\b|$)/i);
+  return match ? match[1] : "";
+}
+
 async function searchArxiv(query, count) {
-  const attempts = [];
-  const cleaned = normalizeSpace(query).replace(/"/g, "");
-  const shortQuery = isShortScholarQuery(cleaned);
-  const addAttempt = (searchQuery, sortBy = "", sortOrder = "") => {
-    const key = [searchQuery, sortBy, sortOrder].join("|");
-    if (!attempts.some((item) => item.key === key)) attempts.push({ key, searchQuery, sortBy, sortOrder });
-  };
-  if (cleaned) addAttempt('ti:"' + cleaned + '"');
-  if (shortQuery && cleaned) addAttempt('ti:"' + cleaned + '"', "submittedDate", "ascending");
-  if (cleaned.includes(" ")) addAttempt('all:"' + cleaned + '"');
-  addAttempt("all:" + query);
-  const notes = [];
-  let rows = [];
-  for (const attempt of attempts) {
-    try {
-      const params = new URLSearchParams({ search_query: attempt.searchQuery, start: "0", max_results: String(count) });
-      if (attempt.sortBy) params.set("sortBy", attempt.sortBy);
-      if (attempt.sortOrder) params.set("sortOrder", attempt.sortOrder);
-      const { text } = await curlRequest("https://export.arxiv.org/api/query?" + params, { headers: { Accept: "application/atom+xml,application/xml" }, timeout: 20, maxBytes: 1800000 });
-      const found = parseArxivEntries(text, count);
-      if (found.length) rows = dedupe(rows.concat(found));
-      else notes.push(attempt.searchQuery + ": 0 result(s)");
-    } catch (error) {
-      notes.push(attempt.searchQuery + ": " + error.message);
-    }
+  const now = Date.now();
+  if (arxivRateLimitedUntil > now) {
+    const waitMs = arxivRateLimitedUntil - now;
+    throw new Error(`arXiv recently returned HTTP 429; retry after about ${Math.ceil(waitMs / 1000)}s or put arxiv last/disable it`);
   }
-  if (rows.length) return rankScholarRows(rows, query);
-  if (notes.length) throw new Error(notes.join("; "));
-  return [];
+  const cleaned = normalizeSpace(query).replace(/"/g, "");
+  const arxivId = extractArxivId(cleaned);
+  const params = new URLSearchParams({ start: "0", max_results: String(count) });
+  const searchQuery = arxivId ? "id_list:" + arxivId : 'ti:"' + cleaned + '"';
+  if (arxivId) params.set("id_list", arxivId);
+  else params.set("search_query", searchQuery);
+  const response = await curlRequest("https://export.arxiv.org/api/query?" + params, { headers: { Accept: "application/atom+xml,application/xml" }, timeout: 20, maxBytes: 1800000 });
+  const status = Number(response.status || 0);
+  if (status === 429) {
+    arxivRateLimitedUntil = Date.now() + ARXIV_COOLDOWN_MS;
+    throw new Error(`HTTP 429 rate limited for ${searchQuery}; arXiv skipped without extra retry`);
+  }
+  if (!httpStatusOk(response.status)) throw new Error(`HTTP ${response.status || "unknown"} for ${searchQuery}`);
+  return rankScholarRows(parseArxivEntries(response.text, count), query);
 }
 
 async function scholarProvider(provider, query, count) {
@@ -903,21 +923,38 @@ async function scholarProvider(provider, query, count) {
   throw new Error("Unknown scholar provider: " + provider);
 }
 
+function scholarProviderOrder(override) {
+  if (Array.isArray(override) && override.length) return dedupeProviders(override);
+  const env = String(process.env.CLAUDE_NET_SCHOLAR_PROVIDERS || "").trim();
+  if (env) return dedupeProviders(splitList(env));
+  const searchEnv = splitList(process.env.CLAUDE_NET_SEARCH_PROVIDERS)
+    .map(normalizeProviderName)
+    .filter((name) => ["crossref", "semantic_scholar", "arxiv"].includes(name));
+  if (searchEnv.length) return dedupeProviders(searchEnv);
+  return ["crossref", "semantic_scholar", "arxiv"];
+}
+
 async function scholarSearch(args) {
   const query = String(args?.query || "").trim();
   if (!query) throw new Error("query is required");
   const count = Math.max(1, Math.min(Number(args?.count) || 5, 10));
-  const providers = dedupeProviders(Array.isArray(args?.providers) && args.providers.length ? args.providers : ["arxiv", "semantic_scholar", "crossref"]);
+  const providers = scholarProviderOrder(args?.providers);
   const candidateCount = Math.max(count, isShortScholarQuery(query) ? 30 : 10);
+  const disabled = disabledProviderSet();
   const notes = [];
   let rows = [];
   for (const provider of providers) {
+    const name = normalizeProviderName(provider);
+    if (disabled.has(name)) {
+      notes.push(name + ": skipped (disabled by CLAUDE_NET_DISABLED_PROVIDERS)");
+      continue;
+    }
     try {
-      const providerRows = await scholarProvider(provider, query, candidateCount);
-      notes.push(provider + ": " + providerRows.length + " result(s)");
+      const providerRows = await scholarProvider(name, query, candidateCount);
+      notes.push(name + ": " + providerRows.length + " result(s)");
       rows = dedupe(rows.concat(providerRows));
     } catch (error) {
-      notes.push(provider + ": " + error.message);
+      notes.push(name + ": " + error.message);
     }
   }
   return formatResultRows("Scholar results for: " + query, rankScholarRows(rows, query).slice(0, count), notes);
@@ -1221,10 +1258,15 @@ function formatFeed(entries, sourceUrl, count) {
 }
 
 function formatFetchedContent(response, args = {}) {
-  const maxChars = Math.max(500, Math.min(Number(args?.max_chars) || 12000, 100000));
+  const maxChars = Math.max(500, Math.min(Number(args?.max_chars) || DEFAULT_FETCH_MAX_CHARS, MAX_OUTPUT_CHARS));
+  const offset = Math.max(0, Math.min(Number(args?.offset) || 0, 1000000000));
+  const includeLinks = Boolean(args?.include_links);
+  const linkLimit = Math.max(1, Math.min(Number(args?.link_limit) || 50, 200));
+  const sameDomainLinks = Boolean(args?.same_domain_links);
   const extract = String(args?.extract || "auto").toLowerCase();
   const text = response.text || "";
   const contentType = response.contentType || "";
+  const isHtml = /html/i.test(contentType) || /<html|<!doctype html/i.test(text.slice(0, 1000));
   const lines = [
     `URL: ${response.finalUrl}`,
     `Route: ${response.route}`,
@@ -1244,7 +1286,7 @@ function formatFetchedContent(response, args = {}) {
   } else if (extract !== "raw" && looksFeed(text, contentType)) {
     body = formatFeed(parseFeedEntries(text, 50), response.finalUrl, Math.min(50, Math.ceil(maxChars / 500)));
     lines.push("Format: RSS/Atom");
-  } else if (extract !== "raw" && (/html/i.test(contentType) || /<html|<!doctype html/i.test(text.slice(0, 1000)))) {
+  } else if (extract !== "raw" && isHtml) {
     if (extract === "markdown") {
       const readable = readableHtml(text);
       title = readable.title;
@@ -1268,7 +1310,21 @@ function formatFetchedContent(response, args = {}) {
     lines.push("Format: raw");
   }
   if (title) lines.push(`Title: ${title}`);
-  lines.push("", (body || "(No extractable text.)").slice(0, maxChars));
+  const fullBody = body || "(No extractable text.)";
+  const start = Math.min(offset, fullBody.length);
+  const end = Math.min(start + maxChars, fullBody.length);
+  lines.push(`Content range: characters ${start}-${end} of ${fullBody.length}`);
+  if (end < fullBody.length) lines.push(`next_offset: ${end}`);
+  lines.push("", fullBody.slice(start, end) || "(No extractable text.)");
+  if (end < fullBody.length) lines.push("", `Continue with fetch_url offset=${end} max_chars=${maxChars}.`);
+  if (includeLinks) {
+    const links = isHtml ? extractLinksFromHtml(text, response.finalUrl, linkLimit, sameDomainLinks) : [];
+    lines.push("", `Links${sameDomainLinks ? " (same domain)" : ""}: ${links.length}`);
+    links.forEach((link, index) => {
+      lines.push(`${index + 1}. ${link.text || "(no text)"}`);
+      lines.push(`   URL: ${link.url}`);
+    });
+  }
   return lines.join("\n");
 }
 
@@ -1306,14 +1362,16 @@ function requestArgs(args = {}, defaults = {}) {
 
 async function fetchUrl(args) {
   const url = ensureUrl(args?.url);
-  const response = await curlRequest(url, { ...requestArgs(args), maxBytes: 1200000 });
+  const maxBytes = Math.max(100000, Math.min(Number(args?.max_bytes) || DEFAULT_FETCH_BYTES, 50000000));
+  const response = await curlRequest(url, { ...requestArgs(args), maxBytes });
   return formatFetchedContent(response, args);
 }
 
 async function extractLinks(args) {
   const url = ensureUrl(args?.url);
   const limit = Math.max(1, Math.min(Number(args?.limit) || 50, 200));
-  const response = await curlRequest(url, { ...requestArgs(args), maxBytes: 1200000 });
+  const maxBytes = Math.max(100000, Math.min(Number(args?.max_bytes) || DEFAULT_FETCH_BYTES, 50000000));
+  const response = await curlRequest(url, { ...requestArgs(args), maxBytes });
   const links = extractLinksFromHtml(response.text, response.finalUrl, limit, Boolean(args?.same_domain));
   if (!links.length) return `No links found for ${response.finalUrl}.`;
   const lines = [`Links for: ${response.finalUrl}`, `Route: ${response.route}`, ""];
@@ -1422,7 +1480,7 @@ async function proxyStatus() {
   routes.forEach((route, index) => lines.push(`${index + 1}. ${route || "direct"}`));
   lines.push("", `Default providers (non-CJK): ${providerOrder("test", []).join(", ")}`);
   lines.push(`Default providers (CJK): ${providerOrder("\u6d4b\u8bd5", []).join(", ")}`);
-  lines.push("Set CLAUDE_NET_PROXY=http://127.0.0.1:7890 to force a local VPN/proxy, or CLAUDE_NET_PROXY=direct to bypass proxies.");
+  lines.push("Auto proxy ports: " + localProxyPorts().join(", ") + ". Set CLAUDE_NET_PROXY to force one route, CLAUDE_NET_PROXY_PORTS to change auto-detect ports, or CLAUDE_NET_PROXY=direct to bypass proxies.");
   return lines.join("\n");
 }
 
