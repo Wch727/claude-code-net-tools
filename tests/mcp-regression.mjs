@@ -111,6 +111,7 @@ function cleanEnv(baseUrl, runtime) {
   env.CLAUDE_NET_PLAYWRIGHT_COMMAND = process.execPath;
   env.CLAUDE_NET_PLAYWRIGHT_ARGS = JSON.stringify([path.join(root, "tests", "playwright-cli-mock.mjs")]);
   env.CLAUDE_NET_ARXIV_API_URL = `${baseUrl}/arxiv`;
+  env.CLAUDE_NET_TEST_BASE_URL = baseUrl;
   env.CLAUDE_NET_ARXIV_COOLDOWN_MS = "60000";
   env.CLAUDE_NET_COOKIE_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "cookies");
   env.CLAUDE_NET_SESSION_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "sessions");
@@ -143,9 +144,15 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     await client.initialize();
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "browser_status", "browser_search", "browser_fetch", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
+    for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "browser_status", "browser_search", "browser_fetch", "browser_action", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
       assert.ok(names.includes(required), `${label} missing tool ${required}`);
     }
+    const searchWebRequired = toolMap(tools).get("search_web")?.inputSchema?.required || [];
+    assert.deepEqual(
+      [...searchWebRequired].sort(),
+      ["intent", "queries", "query", "time_budget", "verify_top"].sort(),
+      `${label} search_web must require the search-planning fields`,
+    );
 
     const doctor = await client.callTool("net_doctor", { providers: ["duckduckgo", "kimi"], live: false });
     assertIncludes(doctor, "Claude Code net-tools doctor:", `${label} net_doctor`);
@@ -174,6 +181,26 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     const rendered = await client.callTool("browser_fetch", { url: "https://example.test/app", include_links: true });
     assertIncludes(rendered, "Rendered fixture body from Playwright", label + " browser_fetch");
     assertIncludes(rendered, "https://example.test/next", label + " browser_fetch links");
+
+    const action = await client.callTool("browser_action", { action: "open", session: "fixture", url: "https://example.test/complex" });
+    assertIncludes(action, "Browser action: open", label + " browser_action");
+    assertIncludes(action, "Interactive elements: 1", label + " browser_action elements");
+    assertIncludes(action, "Load data", label + " browser_action element label");
+
+    const multiSearch = await client.callTool("search_web", {
+      query: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+      queries: ["BERT original paper Devlin"],
+      intent: "academic",
+      count: 2,
+      browser: "always",
+      verify_top: 1,
+      time_budget: 15,
+    });
+    assertIncludes(multiSearch, "BERT original paper Devlin", label + " multi-query search");
+    assertIncludes(multiSearch, "\n1. BERT: Pre-training", label + " exact academic title priority");
+    assertIncludes(multiSearch, "academic exact-title match", label + " exact academic title note");
+    assertIncludes(multiSearch, "Verification: reachable; HTTP 200", label + " search verification");
+    assertIncludes(multiSearch, "no heuristic relevance reranking", label + " search ordering");
 
     const page = await client.callTool("fetch_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, include_links: true, link_limit: 5 });
     assertIncludes(page, "Status: 200", `${label} fetch_url`);

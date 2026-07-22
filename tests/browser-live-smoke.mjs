@@ -118,6 +118,19 @@ async function runRuntime(label, command, args, url) {
     const automatic = await client.call("fetch_url", { url, max_chars: 2000, browser: "auto" });
     assert.match(automatic, /Rendered by real Playwright/);
     assert.match(automatic, /Browser fallback reason:/);
+
+    const complexUrl = new URL("/complex", url).href;
+    const opened = await client.call("browser_action", { action: "open", session: "complex", url: complexUrl });
+    assert.match(opened, /Interactive elements:/);
+    assert.match(opened, /Load data/);
+    await client.call("browser_action", { action: "type", session: "complex", target: { label: "Name" }, value: "Claude" });
+    await client.call("browser_action", { action: "click", session: "complex", target: { role: "button", name: "Load data" } });
+    const extracted = await client.call("browser_action", { action: "extract", session: "complex", target: { css: "#result" } });
+    assert.match(extracted, /Hello Claude/);
+    const network = await client.call("browser_action", { action: "network", session: "complex", target: { role: "button", name: "Call API" }, url_pattern: "/data", wait_ms: 500 });
+    assert.match(network, /Network responses: 1/);
+    assert.match(network, /message.*Network data/);
+    await client.call("browser_action", { action: "close", session: "complex" });
   } finally {
     await client.close();
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
@@ -128,6 +141,16 @@ const server = http.createServer((req, res) => {
   if (req.url === "/app") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end("<!doctype html><html><head><title>Live Browser Fixture</title></head><body><main id='app'></main><script>document.querySelector('#app').innerHTML='<h1>Rendered by real Playwright</h1><p>Dynamic body is available.</p><a href=\"/next\">Next</a>';</script></body></html>");
+    return;
+  }
+  if (req.url === "/complex") {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><html><head><title>Complex Browser Fixture</title></head><body><main><label for="name">Name</label><input id="name"><button id="load">Load data</button><button id="api">Call API</button><div id="result"></div></main><script>document.querySelector('#load').onclick=()=>document.querySelector('#result').textContent='Hello '+document.querySelector('#name').value;document.querySelector('#api').onclick=async()=>{const data=await fetch('/data').then(r=>r.json());document.querySelector('#result').textContent=data.message;};</script></body></html>`);
+    return;
+  }
+  if (req.url === "/data") {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ message: "Network data" }));
     return;
   }
   res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });

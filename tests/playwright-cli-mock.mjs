@@ -26,7 +26,15 @@ if (sourceIndex >= 0) {
     process.stderr.write("invalid Playwright function: " + error.message + "\n");
     process.exit(1);
   }
-  if (source.includes("totalChars") && source.includes("includeLinks")) {
+  if (source.includes("targetLocator") && source.includes("Interactive elements") === false) {
+    result = JSON.stringify({
+      url: "https://example.test/complex",
+      title: "Complex Fixture",
+      text: "Complex page rendered by Playwright",
+      totalChars: 37,
+      elements: [{ tag: "button", role: "button", text: "Load data", ariaLabel: "", label: "", name: "", placeholder: "", type: "button", href: "", disabled: false }],
+    });
+  } else if (source.includes("totalChars") && source.includes("includeLinks")) {
     const content = "Rendered fixture body from Playwright. JavaScript content is now available.";
     result = JSON.stringify({
       finalUrl: "https://example.test/rendered",
@@ -46,8 +54,13 @@ if (sourceIndex >= 0) {
       rows: [
         {
           title: "Principles of Neurodynamics and the Perceptron",
-          url: "https://example.test/rosenblatt",
+          url: (process.env.CLAUDE_NET_TEST_BASE_URL || "https://example.test") + "/page",
           snippet: "Frank Rosenblatt, XOR, and the 1962 book.",
+        },
+        {
+          title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+          url: (process.env.CLAUDE_NET_TEST_BASE_URL || "https://example.test") + "/page?paper=bert",
+          snippet: "The original BERT paper by Devlin and colleagues.",
         },
       ],
       bodyText: "",

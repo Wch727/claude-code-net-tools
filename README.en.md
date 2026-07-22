@@ -46,17 +46,18 @@ If you do not need a proxy, leave `CLAUDE_NET_PROXY` unset or set it to `direct`
 
 ## Common Tools
 - `net_doctor`: main Claude Code networking diagnostic; configuration-only by default, real search only with `live=true`.
-- `search_web`: primary Claude Code web search; when available it queries two independent provider families and merges them round-robin in configured order without relevance reranking.
+- `search_web`: primary Claude Code search; accepts up to three LLM-prepared queries, `general|academic|code|news|official` intent, a total time budget, and optional source verification without default relevance reranking.
 - `search_web_focused`: explicit assisted search for noisy results.
 - `scholar_search`: paper search through Crossref, Semantic Scholar, and arXiv.
 - `package_search`: npm, PyPI, and GitHub repository search.
 - `fetch_url` / `extract_links` / `fetch_json` / `fetch_rss` / `fetch_pdf`: fetch webpages, links, JSON, RSS/Atom, and PDFs.
+- `browser_action`: open, click, type, wait, scroll, extract, download, and capture XHR/JSON in a named Playwright session.
 - `session_create` / `session_status` / `session_clear`: named HTTP sessions with default headers/cookies/referer and a dedicated cookie jar.
 - `proxy_status` / `search_status` / `pdf_status`: focused diagnostics for routes, provider status, and PDF extraction.
 
 ## Browser Search (Optional)
 
-`browser_search` and `browser_fetch` use local Playwright to open real search pages and read JavaScript-rendered content. `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`; the default `auto` falls back when HTTP search returns too few results, too little independent-source coverage, or a page is blocked/JavaScript-only.
+`browser_search` and `browser_fetch` use local Playwright to open real search pages and read JavaScript-rendered content; `browser_action` handles forms, buttons, lazy loading, downloads, and page-issued JSON requests. `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`; the default `auto` falls back when HTTP search returns too few results, too little independent-source coverage, or a page is blocked/JavaScript-only.
 
 Check and install browser support before first use:
 

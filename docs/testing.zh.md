@@ -11,7 +11,7 @@ Use net-tools net_doctor live=true query="Claude Code MCP".
 Use net-tools proxy_status.
 Use net-tools search_status.
 Use net-tools search_web to search "叶兰峰是谁" count 5.
-Use net-tools search_web to search "BERT Bidirectional Encoder Representations from Transformers Google arXiv 1810.04805" count 5, then summarize the key sources.
+Use net-tools search_web with primary query "BERT original paper", alternative queries ["BERT Bidirectional Encoder Representations from Transformers arXiv 1810.04805", "site:research.google BERT language model"], intent academic, count 6, time_budget 30, and verify_top 2; then summarize the verified sources.
 Use net-tools fetch_url to read https://example.com with extract readable include_links true link_limit 10.
 Use net-tools scholar_search to search "Attention Is All You Need Vaswani 2017 transformer" count 5.
 Use net-tools search_web to search "Attention Is All You Need arXiv PDF" count 5, choose the official arXiv PDF, then use net-tools fetch_pdf to read it.
@@ -26,6 +26,7 @@ Use net-tools browser_status with live=true.
 Use net-tools browser_search to search "Rosenblatt XOR problem Principles of Neurodynamics 1962" count 3, preserving browser order.
 Use net-tools scholar_search to search "McDermott R1 rule-based configurer computer systems 1982" count 3 with provider semantic_scholar; if empty, report the relaxed query attempt.
 Use net-tools browser_fetch to read https://en.wikipedia.org/wiki/Frank_Rosenblatt with include_links true. Do not use Claude Code built-in Fetch.
+For an interactive page, use browser_action action=open with a named session, inspect its snapshot, then use role+name or label targets for type/click/extract; use action=network with url_pattern when the useful data comes from XHR/fetch, and close the session afterward.
 ```
 
 这里最后一条必须显示调用的是 `net-tools browser_fetch` 或 `net-tools fetch_url`。如果 Claude Code 改用内置 `Fetch`，出现“Unable to verify if domain is safe to fetch”属于另一套工具的域名校验，不是 net-tools 抓取失败。
@@ -52,8 +53,10 @@ npm run test:browser-live
 - 工具列表和 schema parity。
 - `net_doctor` 配置诊断，默认不调用付费 API。
 - `fetch_url` 分页、链接提取，以及完整正文包含“security check”等普通词语时不误判为拦截页。
+- `search_web` 多 query 合并、总时间预算和 `verify_top` 来源标注。
+- `browser_action` schema、命名会话和可交互元素输出。
 - `session_create/session_status/session_clear` 以及 session headers/cookies/referer。
 - `search_status` provider 诊断。
 - arXiv 429 冷却，不继续连发请求。
 
-`npm test` 默认不下载依赖。`npm run test:browser-live` 需要已安装 Playwright 浏览器，会用本地 JavaScript 动态页面真实烟测 Node 和 Python 两个版本的 `browser_fetch` 及自动回退。
+`npm test` 默认不下载依赖。`npm run test:browser-live` 需要已安装 Playwright 浏览器，会用本地 JavaScript 动态页面真实烟测 Node 和 Python 两版的 `browser_fetch`、自动回退，以及 `browser_action` 的输入、点击、状态复用、区域提取和 XHR/JSON 捕获。

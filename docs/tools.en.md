@@ -11,10 +11,30 @@
 
 ## Search Tools
 
-- `search_web`: primary Claude Code web search. When available, it queries two independent provider families, deduplicates results, and merges them round-robin in configured order; it does not expand queries, apply strict relevance filtering, rerank results, or actively probe redirect final URLs. Let the LLM write the query first.
+- `search_web`: primary Claude Code search. The LLM prepares queries; the tool generates candidates concurrently, deduplicates them, and round-robin merges by query/provider order without default heuristic reranking. In `academic` mode only, an exact paper-title match is placed before fuzzy candidates.
+- `queries`: Claude Code passes 0-2 alternatives on every call; use `[]` when there are none. The primary `query` plus alternatives are capped at three. The tool does not call another model to rewrite the question.
+- `intent`: `academic` routes to Crossref/Semantic Scholar/arXiv and `code` routes to GitHub/npm/PyPI. `general|news|official` retain web providers, so the LLM should express date and source requirements in its queries.
+- `time_budget`: one shared budget for candidate search, browser fallback, and verification. Default 30 seconds; collected results are returned when time expires.
+- `verify_top`: optionally fetches the first 0-5 results and labels HTTP status, final URL, page title, and body length without changing order.
 - `search_web_focused`: explicit assisted search with cleaned core-query expansion plus optional strict relevance filtering, reranking, and redirect resolution. These filtering options are off by default.
 - `scholar_search`: paper search through Crossref, Semantic Scholar, and arXiv. arXiv is later in the default order and enters cooldown after HTTP 429.
 - `package_search`: package and repository search through npm, PyPI, and GitHub repositories.
+
+Example:
+
+```json
+{
+  "query": "BERT original paper",
+  "queries": [
+    "BERT Bidirectional Encoder Representations from Transformers arXiv 1810.04805",
+    "site:research.google BERT language model"
+  ],
+  "intent": "academic",
+  "count": 6,
+  "time_budget": 30,
+  "verify_top": 2
+}
+```
 
 ## Fetch Tools
 
@@ -55,7 +75,7 @@ Rules:
 - Explicit `headers`, `cookies`, and `cookie_jar` override session defaults.
 - `update_referer=true` by default, so the session referer is updated to the final URL after a request.
 - `session_status` redacts cookie values and shows only count/type.
-- Complex login, CSRF, captchas, and JavaScript state still require browser automation.
+- Use `browser_action` with a dedicated persistent profile for complex login and JavaScript state. Captchas require manual user handling and are not bypassed automatically.
 
 ## PDF Limits
 
@@ -66,7 +86,21 @@ Rules:
 - `browser_status`: shows the Playwright command, default engine, cache, and profile; `live=true` opens a real page for diagnosis.
 - `browser_search`: opens a real Google, Bing, or DuckDuckGo results page, executes JavaScript, and extracts titles, links, and snippets in page order without reranking.
 - `browser_fetch`: opens a target URL and returns rendered body text and links with `max_chars`, `offset`, and `next_offset` paging.
+- `browser_action`: reuses a named browser session and supports `open|snapshot|click|type|wait|scroll|extract|download|network|close`. Prefer `role+name` or `label` locators; CSS is a fallback. Arbitrary JavaScript is not accepted.
+- `browser_action action=network`: captures XHR/fetch while clicking a target, or while reloading when no target is supplied. Use `url_pattern` to limit URLs and return JSON/text previews.
 - `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`. `auto` falls back for insufficient results, insufficient independent source coverage, HTTP failure, anti-bot pages, or JavaScript-only shells.
+
+Complex-page example:
+
+```json
+{"action":"open","session":"docs","url":"https://example.com/app"}
+{"action":"type","session":"docs","target":{"label":"Keyword"},"value":"BERT"}
+{"action":"click","session":"docs","target":{"role":"button","name":"Search"}}
+{"action":"network","session":"docs","target":{"role":"button","name":"Load more"},"url_pattern":"/api/"}
+{"action":"close","session":"docs"}
+```
+
+Each action is one Playwright CLI round trip. Inspect the interactive elements returned by `open/snapshot`, then issue only the necessary actions to reduce latency and accidental clicks.
 
 The browser session is reused for the MCP process lifetime. Set `CLAUDE_NET_BROWSER_PROFILE` to a dedicated persistent profile for browser cookies and login state. It is separate from the HTTP cookie jar managed by `session_create`.
 

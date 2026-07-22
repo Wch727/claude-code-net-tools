@@ -74,6 +74,7 @@ Do not register the same `net-tools` name in multiple scopes. If `claude mcp lis
 | `CLAUDE_NET_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` | Proxy fallback when `CLAUDE_NET_PROXY` is not set. |
 | `CLAUDE_NET_PROXY_PORTS` | Local ports to auto-detect when no proxy is pinned, for example `7890,7897,1080`. |
 | `CLAUDE_NET_SEARCH_PROVIDERS` | Override web-search provider order, for example `bing_rss,duckduckgo,bing_html`. |
+| `CLAUDE_NET_SEARCH_BUDGET` | Default total `search_web` time budget in seconds. Default `30`; override per call with `time_budget`. |
 | `CLAUDE_NET_SCHOLAR_PROVIDERS` | Override scholar-search provider order, for example `crossref,semantic_scholar,arxiv`. |
 | `CLAUDE_NET_DISABLED_PROVIDERS` | Disable providers, for example `duckduckgo,bing_html,arxiv`. |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | Consecutive provider failures before automatic skip. Default `3`. |

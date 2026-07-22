@@ -11,10 +11,30 @@
 
 ## 搜索工具
 
-- `search_web`：Claude Code 的基础网页搜索。可用时查询两个独立 provider 家族，去重后按配置顺序轮询合并；不扩写 query、不做严格相关性过滤、不启发式重排、不主动探测跳转最终 URL。让 LLM 先写好 query，再用它拿材料。
+- `search_web`：Claude Code 主搜索入口。LLM 先准备 query，工具负责并发候选生成、去重和按 query/provider 顺序轮询合并，默认不启发式重排；仅在 `academic` 模式发现与任一查询完全相同的论文标题时，将精确命中放到模糊候选前。
+- `queries`：Claude Code 每次调用需传 0-2 条替代查询；没有备选时传 `[]`。连同主 `query` 最多执行 3 条，工具不会自行调用另一个模型扩写问题。
+- `intent`：`academic` 路由到 Crossref/Semantic Scholar/arXiv，`code` 路由到 GitHub/npm/PyPI；`general|news|official` 保持网页 provider，由 LLM 在 query 中表达时间和来源要求。
+- `time_budget`：候选搜索、浏览器回退和验证共享的总等待预算，默认 30 秒；到时返回已经收集的结果。
+- `verify_top`：可选抓取前 0-5 个结果，标注 HTTP 状态、最终 URL、页面标题和正文长度，不改变结果顺序。
 - `search_web_focused`：显式增强网页搜索。支持 cleaned core query 扩展，以及可选的严格相关性过滤、重排和跳转解析；这些筛选默认关闭，适合基础搜索太吵时再按需启用。
 - `scholar_search`：论文搜索，支持 Crossref、Semantic Scholar、arXiv。默认把 arXiv 放后面，并在遇到 429 时冷却。
 - `package_search`：开发包和仓库搜索，支持 npm、PyPI、GitHub repositories。
+
+示例：
+
+```json
+{
+  "query": "BERT original paper",
+  "queries": [
+    "BERT Bidirectional Encoder Representations from Transformers arXiv 1810.04805",
+    "site:research.google BERT language model"
+  ],
+  "intent": "academic",
+  "count": 6,
+  "time_budget": 30,
+  "verify_top": 2
+}
+```
 
 ## 抓取工具
 
@@ -55,7 +75,7 @@
 - 显式传入的 `headers`、`cookies`、`cookie_jar` 优先级高于 session 默认值。
 - 默认 `update_referer=true`，请求完成后 session 的 referer 会更新为最终 URL。
 - `session_status` 会隐藏 cookie 值，只显示 cookie 数量或类型。
-- 复杂登录、CSRF、验证码、JavaScript 状态仍需要浏览器自动化工具。
+- 复杂登录和 JavaScript 状态可改用 `browser_action` 配合专用持久化 profile；验证码需要用户手动处理，工具不会自动绕过。
 
 ## PDF 限制
 
@@ -66,7 +86,21 @@
 - `browser_status`：显示 Playwright 命令、默认引擎、缓存、profile，并可用 `live=true` 打开真实网页诊断。
 - `browser_search`：打开 Google、Bing 或 DuckDuckGo 的真实搜索页，执行 JavaScript 后按页面原顺序提取标题、链接和摘要，不打分重排。
 - `browser_fetch`：打开目标 URL，读取渲染后的正文和链接，支持 `max_chars`、`offset` 和 `next_offset` 分段读取。
+- `browser_action`：复用命名浏览器会话，支持 `open|snapshot|click|type|wait|scroll|extract|download|network|close`。定位目标时优先使用 `role+name` 或 `label`，CSS 只作为回退；不接受任意 JavaScript。
+- `browser_action action=network`：在点击指定目标（未指定目标时重新加载页面）的同时捕获 XHR/fetch，可用 `url_pattern` 限定 URL，并返回 JSON/text 预览。
 - `search_web`、`search_web_focused`、`fetch_url` 的 `browser` 参数支持 `never|auto|always`。`auto` 在结果不足、独立来源不足、HTTP 失败、反爬页或 JavaScript 空壳时回退。
+
+复杂网页示例：
+
+```json
+{"action":"open","session":"docs","url":"https://example.com/app"}
+{"action":"type","session":"docs","target":{"label":"关键词"},"value":"BERT"}
+{"action":"click","session":"docs","target":{"role":"button","name":"搜索"}}
+{"action":"network","session":"docs","target":{"role":"button","name":"加载更多"},"url_pattern":"/api/"}
+{"action":"close","session":"docs"}
+```
+
+每个动作都是一次 Playwright CLI 往返。先看 `open/snapshot` 返回的交互元素，再执行必要动作，可以减少延迟和误点。
 
 浏览器 session 在 MCP 进程内复用。设置 `CLAUDE_NET_BROWSER_PROFILE` 可使用专用持久化 profile 保存浏览器 cookie 和登录状态；它与 `session_create` 的 HTTP cookie jar 相互独立。
 

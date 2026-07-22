@@ -46,17 +46,18 @@ claude mcp add net-tools-py python C:\path\to\claude-code-net-tools\claude_net_m
 
 ## 常用工具
 - `net_doctor`：Claude Code 联网总诊断，默认只检查配置，`live=true` 才实际搜索。
-- `search_web`：Claude Code 的基础网页搜索；可用时查询两个独立 provider 家族，按配置顺序轮询合并，不打分重排，也不替 LLM 理解问题。
+- `search_web`：Claude Code 主搜索入口；支持最多 3 条由 LLM 准备的 query、`general|academic|code|news|official` 意图、总时间预算和可选来源验证，默认不打分重排。
 - `search_web_focused`：显式增强搜索，仅在基础搜索太吵时使用。
 - `scholar_search`：论文搜索，支持 Crossref、Semantic Scholar、arXiv。
 - `package_search`：npm、PyPI、GitHub repository 搜索。
 - `fetch_url` / `extract_links` / `fetch_json` / `fetch_rss` / `fetch_pdf`：抓取网页、链接、JSON、RSS/Atom、PDF。
+- `browser_action`：在命名 Playwright 会话中打开、点击、填写、等待、滚动、提取、下载并捕获 XHR/JSON。
 - `session_create` / `session_status` / `session_clear`：命名 HTTP session，保存默认 headers/cookies/referer，并复用独立 cookie jar。
 - `proxy_status` / `search_status` / `pdf_status`：分项诊断网络出口、provider 状态和 PDF 提取工具。
 
 ## 浏览器搜索（可选）
 
-`browser_search` 和 `browser_fetch` 通过本机 Playwright 打开真实搜索页并读取 JavaScript 渲染后的内容。`search_web`、`search_web_focused` 和 `fetch_url` 支持 `browser=never|auto|always`；默认 `auto` 在普通 HTTP 搜索结果不足、独立来源不足，或网页被拦截/只有 JS 空壳时回退。
+`browser_search` 和 `browser_fetch` 通过本机 Playwright 打开真实搜索页并读取 JavaScript 渲染后的内容；`browser_action` 进一步处理表单、按钮、懒加载、下载和页面发出的 JSON 请求。`search_web`、`search_web_focused` 和 `fetch_url` 支持 `browser=never|auto|always`；默认 `auto` 在普通 HTTP 搜索结果不足、独立来源不足，或网页被拦截/只有 JS 空壳时回退。
 
 首次使用浏览器功能前检查并安装：
 
