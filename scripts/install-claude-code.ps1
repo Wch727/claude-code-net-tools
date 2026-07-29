@@ -10,6 +10,7 @@ param(
   [string]$BrowserProfile = "",
   [switch]$BrowserHeaded,
   [switch]$Python,
+  [switch]$ShowConsole,
   [switch]$Force
 )
 
@@ -56,15 +57,17 @@ if ($BrowserProfile.Trim()) {
 }
 if ($BrowserHeaded) {
   $envArgs += @("-e", "CLAUDE_NET_BROWSER_HEADED=true")
+} else {
+  $envArgs += @("-e", "CLAUDE_NET_BROWSER_HEADED=false")
 }
 
 if ($Runtime -eq "node") {
   if (-not (Test-CommandAvailable "node")) { throw "Runtime 'node' selected, but node was not found in PATH." }
-  $Command = "node"
+  $Command = (Get-Command "node").Source
   $Entry = Join-Path $Root "claude_net_mcp.mjs"
 } else {
   if (-not (Test-CommandAvailable "python")) { throw "Runtime 'python' selected, but python was not found in PATH." }
-  $Command = "python"
+  $Command = (Get-Command "python").Source
   $Entry = Join-Path $Root "claude_net_mcp.py"
 }
 
@@ -77,12 +80,20 @@ if ($Force) {
   & claude mcp remove $Name -s $Scope 2>$null | Out-Null
 }
 
+$RuntimeArgs = @($Entry)
+$HiddenLauncher = Join-Path $PSScriptRoot "windows-hidden-launcher.py"
+if (-not $ShowConsole -and (Test-CommandAvailable "pythonw") -and (Test-Path $HiddenLauncher)) {
+  $RuntimeArgs = @($HiddenLauncher, $Command, $Entry)
+  $Command = (Get-Command "pythonw").Source
+  Write-Host "Using the Windows hidden launcher to prevent console popups."
+}
+
 $argsList = @("mcp", "add", "--scope", $Scope, $Name)
 if ($envArgs.Count -gt 0) {
   $argsList += $envArgs
   $argsList += "--"
 }
-$argsList += @($Command, $Entry)
+$argsList += @($Command) + $RuntimeArgs
 
 Write-Host "Installing Claude Code MCP server '$Name' in $Scope scope with $Runtime runtime..."
 Write-Host "claude $($argsList -join ' ')"

@@ -18,6 +18,8 @@ Claude Code Net Tools 是一个本地 MCP server，为 Claude Code 提供可配�
 .\scripts\install-claude-code.ps1
 ```
 
+在 Windows 上，如果系统能找到 `pythonw.exe`，安装脚本会自动使用无窗口启动桥，避免 VS Code/Claude Code 调用 MCP 时闪出命令行窗口。它仍然运行完整的 Node 版；若需调试启动输出，可加 `-ShowConsole`。
+
 macOS/Linux：
 
 ```bash

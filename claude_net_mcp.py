@@ -31,7 +31,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 SERVER_NAME = "claude-code-net-tools"
-SERVER_VERSION = "0.10.0"
+SERVER_VERSION = "0.10.1"
 DEFAULT_TIMEOUT = float(os.environ.get("CLAUDE_NET_TIMEOUT", "20"))
 SEARCH_TIMEOUT = float(os.environ.get("CLAUDE_NET_SEARCH_TIMEOUT", "15"))
 MAX_FETCH_BYTES = int(os.environ.get("CLAUDE_NET_MAX_FETCH_BYTES", "900000"))
@@ -56,6 +56,7 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 TRANSPORT_MODE = ""
 PROVIDER_FAIL_LIMIT = max(1, min(int(os.environ.get("CLAUDE_NET_PROVIDER_FAIL_LIMIT", "3")), 10))
 PROVIDER_STATS: dict[str, dict[str, Any]] = {}
+HIDDEN_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 SEARCH_PROVIDER_META = {
     "kimi": {"kind": "api", "env": ["KIMI_API_KEY", "MOONSHOT_API_KEY"], "description": "Kimi/Moonshot web search API"},
     "minimax": {"kind": "api", "env": ["MINIMAX_API_KEY"], "description": "MiniMax web search API"},
@@ -1116,7 +1117,6 @@ def _parse_playwright_output(stdout: str) -> Any:
 
 def _run_playwright(args: list[str], parse_result: bool = False, timeout: float = BROWSER_TIMEOUT) -> Any:
     command = [*_playwright_invocation(), *args, "--json"]
-    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     try:
         os.makedirs(BROWSER_WORK_DIR, exist_ok=True)
         completed = subprocess.run(
@@ -1128,7 +1128,7 @@ def _run_playwright(args: list[str], parse_result: bool = False, timeout: float 
             errors="replace",
             timeout=timeout + 5,
             check=True,
-            creationflags=creationflags,
+            creationflags=HIDDEN_SUBPROCESS_FLAGS,
             env=os.environ.copy(),
         )
         return _parse_playwright_output(completed.stdout) if parse_result else completed.stdout
@@ -1974,7 +1974,16 @@ def _indent_block(text: str, prefix: str = "  ") -> str:
 
 def _command_version(command: str, args: list[str] | None = None) -> str:
     try:
-        proc = subprocess.run([command] + (args or ["--version"]), check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        proc = subprocess.run(
+            [command] + (args or ["--version"]),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            creationflags=HIDDEN_SUBPROCESS_FLAGS,
+        )
         return _trim_diagnostic((proc.stdout or "") + "\n" + (proc.stderr or ""), 400).splitlines()[0]
     except Exception as exc:  # noqa: BLE001
         return "unavailable or failed: " + str(exc)
@@ -3061,7 +3070,16 @@ def pdf_status(arguments: dict[str, Any]) -> str:
     lines = ["PDF extraction status:", f"Command: {tool}"]
     lines.append("Source: CLAUDE_NET_PDFTOTEXT" if os.environ.get("CLAUDE_NET_PDFTOTEXT") else "Source: PATH lookup for pdftotext")
     try:
-        proc = subprocess.run([tool, "-v"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        proc = subprocess.run(
+            [tool, "-v"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            creationflags=HIDDEN_SUBPROCESS_FLAGS,
+        )
         lines.append("Status: available")
         lines.append("Version output: " + _trim_diagnostic((proc.stdout or "") + "\n" + (proc.stderr or "")))
     except Exception as exc:  # noqa: BLE001
@@ -3100,7 +3118,16 @@ def fetch_pdf(arguments: dict[str, Any]) -> str:
             handle.write(body)
         tool = _pdf_text_tool()
         try:
-            proc = subprocess.run([tool, "-layout", pdf_path, "-"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout + 5)
+            proc = subprocess.run(
+                [tool, "-layout", pdf_path, "-"],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout + 5,
+                creationflags=HIDDEN_SUBPROCESS_FLAGS,
+            )
             extracted = proc.stdout or "(No extractable text.)"
         except Exception as exc:  # noqa: BLE001
             extracted = f"PDF downloaded, but text extraction failed. Run pdf_status for local extractor diagnostics, install Poppler pdftotext, or set CLAUDE_NET_PDFTOTEXT. Error: {exc}"

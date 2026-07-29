@@ -18,6 +18,8 @@ Recommended Claude Code install:
 .\scripts\install-claude-code.ps1
 ```
 
+On Windows, when `pythonw.exe` is available, the installer automatically uses a windowless launcher so VS Code/Claude Code does not flash a console while invoking the MCP server. It still runs the full Node build. Add `-ShowConsole` when startup console output is needed for debugging.
+
 macOS/Linux:
 
 ```bash

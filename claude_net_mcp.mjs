@@ -9,7 +9,7 @@ import { promisify, TextDecoder } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const SERVER_NAME = "claude-code-net-tools";
-const SERVER_VERSION = "0.10.0";
+const SERVER_VERSION = "0.10.1";
 const DEFAULT_LOCAL_PROXY_PORTS = [7890, 7897, 7899, 10809, 10808, 1080, 8080, 20171, 2080];
 const DEFAULT_FETCH_MAX_CHARS = Math.max(500, Math.min(Number(process.env.CLAUDE_NET_DEFAULT_MAX_CHARS) || 12000, 200000));
 const MAX_OUTPUT_CHARS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_MAX_OUTPUT_CHARS) || 200000, 1000000));
@@ -806,7 +806,7 @@ async function curlRequest(url, { method = "GET", headers = {}, body = null, tim
     if (body !== null && body !== undefined) args.push("--data-raw", typeof body === "string" ? body : JSON.stringify(body));
     args.push(url);
     try {
-      const { stdout } = await execFileAsync(CURL, args, { encoding: "buffer", windowsHide: true, maxBuffer: maxBytes + 65536, timeout: (timeout + 3) * 1000 });
+      const { stdout } = await execFileAsync(CURL, args, { encoding: "buffer", windowsHide: true, maxBuffer: maxBytes + 65536, timeout: Math.ceil((timeout + 3) * 1000) });
       const meta = splitCurlMeta(stdout);
       return { text: meta.text, route: proxy || "direct", status: meta.status, contentType: meta.contentType, finalUrl: meta.finalUrl || url };
     } catch (error) {
@@ -1491,7 +1491,7 @@ async function curlDownload(url, targetPath, { method = "GET", headers = {}, bod
     if (body !== null && body !== undefined) args.push("--data-raw", typeof body === "string" ? body : JSON.stringify(body));
     args.push(url);
     try {
-      const { stdout } = await execFileAsync(CURL, args, { encoding: "utf8", windowsHide: true, maxBuffer: 65536, timeout: (timeout + 3) * 1000 });
+      const { stdout } = await execFileAsync(CURL, args, { encoding: "utf8", windowsHide: true, maxBuffer: 65536, timeout: Math.ceil((timeout + 3) * 1000) });
       const [status = "", contentType = "", finalUrl = ""] = stdout.replace("__CLAUDE_NET_META__", "").trim().split("\t");
       return { route: proxy || "direct", status, contentType, finalUrl: finalUrl || url };
     } catch (error) {
@@ -1509,7 +1509,7 @@ async function curlFinalUrl(url, { timeout = 8 } = {}) {
     if (proxy) args.push("--proxy", proxy); else args.push("--noproxy", "*");
     args.push(url);
     try {
-      const { stdout } = await execFileAsync(CURL, args, { encoding: "utf8", windowsHide: true, maxBuffer: 65536, timeout: (timeout + 3) * 1000 });
+      const { stdout } = await execFileAsync(CURL, args, { encoding: "utf8", windowsHide: true, maxBuffer: 65536, timeout: Math.ceil((timeout + 3) * 1000) });
       const [status = "", finalUrl = ""] = stdout.replace("__CLAUDE_NET_META__", "").trim().split("\t");
       return { status, finalUrl: finalUrl || url, route: proxy || "direct" };
     } catch (error) {
@@ -3050,7 +3050,7 @@ async function fetchPdf(args) {
     const tool = pdfTextTool();
     let stdout;
     try {
-      ({ stdout } = await execFileAsync(tool, ["-layout", pdfPath, "-"], { encoding: "utf8", windowsHide: true, maxBuffer: maxChars + 65536, timeout: (timeout + 5) * 1000 }));
+      ({ stdout } = await execFileAsync(tool, ["-layout", pdfPath, "-"], { encoding: "utf8", windowsHide: true, maxBuffer: maxChars + 65536, timeout: Math.ceil((timeout + 5) * 1000) }));
     } catch (error) {
       return [...baseLines, `Extractor: ${tool}`, "", `PDF downloaded, but text extraction failed. Run pdf_status for local extractor diagnostics, install Poppler pdftotext, or set CLAUDE_NET_PDFTOTEXT. Error: ${error.message}`].join("\n");
     }
