@@ -51,13 +51,30 @@ claude mcp add net-tools-py python C:\path\to\claude-code-net-tools\claude_net_m
 - `scholar_search`：论文搜索，支持 Crossref、Semantic Scholar、arXiv。
 - `package_search`：npm、PyPI、GitHub repository 搜索。
 - `fetch_url` / `extract_links` / `fetch_json` / `fetch_rss` / `fetch_pdf`：抓取网页、链接、JSON、RSS/Atom、PDF。
+- `browser_screenshot`：用真实浏览器搜索或打开 URL，同时把页面文字和截图交给 Claude Code 观察。
 - `browser_action`：在命名 Playwright 会话中打开、点击、填写、等待、滚动、提取、下载并捕获 XHR/JSON。
 - `session_create` / `session_status` / `session_clear`：命名 HTTP session，保存默认 headers/cookies/referer，并复用独立 cookie jar。
 - `proxy_status` / `search_status` / `pdf_status`：分项诊断网络出口、provider 状态和 PDF 提取工具。
 
 ## 浏览器搜索（可选）
 
-`browser_search` 和 `browser_fetch` 通过本机 Playwright 打开真实搜索页并读取 JavaScript 渲染后的内容；`browser_action` 进一步处理表单、按钮、懒加载、下载和页面发出的 JSON 请求。`search_web`、`search_web_focused` 和 `fetch_url` 支持 `browser=never|auto|always`；默认 `auto` 在普通 HTTP 搜索结果不足、独立来源不足，或网页被拦截/只有 JS 空壳时回退。
+`browser_search` 和 `browser_fetch` 通过本机 Playwright 打开真实搜索页并读取 JavaScript 渲染后的内容；`browser_screenshot` 额外返回 MCP 图片，让 Claude Code 直接观察搜索布局、知识面板、图表和复杂组件；`browser_action` 进一步处理表单、按钮、懒加载、下载和页面发出的 JSON 请求。`search_web`、`search_web_focused` 和 `fetch_url` 支持 `browser=never|auto|always`；默认 `auto` 在普通 HTTP 搜索结果不足、独立来源不足，或网页被拦截/只有 JS 空壳时回退。
+
+一次完成“搜索并看图”：
+
+```text
+Use net-tools browser_screenshot with query "BERT" engine auto.
+```
+
+复杂交互可先用 `browser_action` 打开和点击，再用相同 `session` 调用 `browser_screenshot`。截图默认只取当前视口并使用 JPEG；只有确实需要整页版式时才传 `full_page=true`。
+
+公共搜索引擎可能拦截全新无头浏览器。需要更接近日常浏览器时，用隔离的持久化 Chrome profile 重新注册 MCP：
+
+```powershell
+.\scripts\install-claude-code.ps1 -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
+```
+
+验证码只能在可见窗口中由用户手动完成，工具不会绕过；不要把 profile 指向正在运行的日常 Chrome。
 
 首次使用浏览器功能前检查并安装：
 

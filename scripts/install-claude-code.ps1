@@ -6,6 +6,9 @@ param(
   [string]$Runtime = "auto",
   [string]$Proxy = "",
   [string]$Providers = "",
+  [string]$Browser = "",
+  [string]$BrowserProfile = "",
+  [switch]$BrowserHeaded,
   [switch]$Python,
   [switch]$Force
 )
@@ -41,6 +44,18 @@ if ($Proxy.Trim()) {
 }
 if ($Providers.Trim()) {
   $envArgs += @("-e", "CLAUDE_NET_SEARCH_PROVIDERS=$Providers")
+}
+if ($Browser.Trim()) {
+  if ($Browser.Trim().ToLowerInvariant() -notin @("chrome", "msedge", "firefox", "webkit")) {
+    throw "Browser must be chrome, msedge, firefox, or webkit."
+  }
+  $envArgs += @("-e", "CLAUDE_NET_BROWSER=$($Browser.Trim().ToLowerInvariant())")
+}
+if ($BrowserProfile.Trim()) {
+  $envArgs += @("-e", "CLAUDE_NET_BROWSER_PROFILE=$($BrowserProfile.Trim())")
+}
+if ($BrowserHeaded) {
+  $envArgs += @("-e", "CLAUDE_NET_BROWSER_HEADED=true")
 }
 
 if ($Runtime -eq "node") {

@@ -41,6 +41,7 @@ macOS/Linux：
 .\scripts\install-claude-code.ps1 -Proxy http://127.0.0.1:7890
 .\scripts\install-claude-code.ps1 -Proxy direct
 .\scripts\install-claude-code.ps1 -Providers bing_rss,duckduckgo,bing_html
+.\scripts\install-claude-code.ps1 -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
 .\scripts\install-claude-code.ps1 -Runtime python
 .\scripts\install-claude-code.ps1 -Scope user
 .\scripts\install-claude-code.ps1 -Force
@@ -101,6 +102,14 @@ npx --yes --package @playwright/cli playwright-cli install-browser
 
 Python 版也通过同一个 Playwright CLI 启动浏览器，因此启用浏览器功能时仍需要 Node.js/npm。HTTP 模式不需要 Playwright。
 
+最接近日常浏览器的配置是使用本机 Chrome/Edge、专用持久化 profile 和可见窗口。不要直接指定正在运行的日常浏览器 profile；建议创建隔离目录。搜索站点要求验证码时，可在可见窗口中手动完成，之后工具复用该 profile 的 cookie：
+
+```powershell
+.\scripts\install-claude-code.ps1 -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
+```
+
+若不希望显示窗口，去掉 `-BrowserHeaded`；但全新无头浏览器更容易触发公共搜索引擎的机器人验证。
+
 | 变量 | 作用 |
 | --- | --- |
 | `CLAUDE_NET_BROWSER_FALLBACK` | 默认浏览器策略：`never`、`auto` 或 `always`，默认 `auto`。 |
@@ -111,6 +120,7 @@ Python 版也通过同一个 Playwright CLI 启动浏览器，因此启用浏览
 | `CLAUDE_NET_BROWSER_TIMEOUT` | 浏览器命令超时秒数，默认 `35`。 |
 | `CLAUDE_NET_BROWSER_CACHE_TTL_MS` | 浏览器搜索缓存时间，默认 `300000` 毫秒。 |
 | `CLAUDE_NET_BROWSER_WORK_DIR` | Playwright 快照/会话临时目录；默认使用系统临时目录，不污染 Claude Code 项目。 |
+| `CLAUDE_NET_MAX_SCREENSHOT_BYTES` | `browser_screenshot` 返回图片的最大字节数，默认 `5000000`；超限时会优先退回压缩后的当前视口 JPEG。 |
 | `CLAUDE_NET_PLAYWRIGHT_COMMAND` | 高级配置：自定义 `playwright-cli` 可执行命令。 |
 
 ## API key

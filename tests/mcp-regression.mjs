@@ -88,10 +88,15 @@ class McpClient {
   }
 
   async callTool(name, args = {}) {
+    const result = await this.callToolResult(name, args);
+    return (result.content || []).map((item) => item.text || "").join("\n");
+  }
+
+  async callToolResult(name, args = {}) {
     const result = await this.request("tools/call", { name, arguments: args });
     const text = (result.content || []).map((item) => item.text || "").join("\n");
     assert.equal(result.isError, undefined, `${this.label} ${name} returned MCP error:\n${text}`);
-    return text;
+    return result;
   }
 
   close() {
@@ -144,7 +149,7 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     await client.initialize();
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "browser_status", "browser_search", "browser_fetch", "browser_action", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
+    for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "browser_status", "browser_search", "browser_fetch", "browser_screenshot", "browser_action", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
       assert.ok(names.includes(required), `${label} missing tool ${required}`);
     }
     const searchWebRequired = toolMap(tools).get("search_web")?.inputSchema?.required || [];
@@ -181,6 +186,13 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     const rendered = await client.callTool("browser_fetch", { url: "https://example.test/app", include_links: true });
     assertIncludes(rendered, "Rendered fixture body from Playwright", label + " browser_fetch");
     assertIncludes(rendered, "https://example.test/next", label + " browser_fetch links");
+
+    const visual = await client.callToolResult("browser_screenshot", { query: "visual fixture", count: 2, format: "png", wait_ms: 0 });
+    const visualText = visual.content.find((item) => item.type === "text")?.text || "";
+    const visualImage = visual.content.find((item) => item.type === "image");
+    assertIncludes(visualText, "Browser visual search: visual fixture", label + " browser_screenshot text");
+    assert.equal(visualImage?.mimeType, "image/png", label + " browser_screenshot MIME type");
+    assert.ok((visualImage?.data || "").length > 50, label + " browser_screenshot image payload");
 
     const action = await client.callTool("browser_action", { action: "open", session: "fixture", url: "https://example.test/complex" });
     assertIncludes(action, "Browser action: open", label + " browser_action");

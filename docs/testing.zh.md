@@ -24,6 +24,7 @@ Use net-tools search_web to search "Attention Is All You Need arXiv PDF" count 5
 ```text
 Use net-tools browser_status with live=true.
 Use net-tools browser_search to search "Rosenblatt XOR problem Principles of Neurodynamics 1962" count 3, preserving browser order.
+Use net-tools browser_screenshot with query "BERT" engine auto, and describe the visible search modules before opening the original paper source.
 Use net-tools scholar_search to search "McDermott R1 rule-based configurer computer systems 1982" count 3 with provider semantic_scholar; if empty, report the relaxed query attempt.
 Use net-tools browser_fetch to read https://en.wikipedia.org/wiki/Frank_Rosenblatt with include_links true. Do not use Claude Code built-in Fetch.
 For an interactive page, use browser_action action=open with a named session, inspect its snapshot, then use role+name or label targets for type/click/extract; use action=network with url_pattern when the useful data comes from XHR/fetch, and close the session afterward.
@@ -55,8 +56,9 @@ npm run test:browser-live
 - `fetch_url` 分页、链接提取，以及完整正文包含“security check”等普通词语时不误判为拦截页。
 - `search_web` 多 query 合并、总时间预算和 `verify_top` 来源标注。
 - `browser_action` schema、命名会话和可交互元素输出。
+- `browser_screenshot` 的页面文字、MCP 图片 payload，以及图片 MIME 类型。
 - `session_create/session_status/session_clear` 以及 session headers/cookies/referer。
 - `search_status` provider 诊断。
 - arXiv 429 冷却，不继续连发请求。
 
-`npm test` 默认不下载依赖。`npm run test:browser-live` 需要已安装 Playwright 浏览器，会用本地 JavaScript 动态页面真实烟测 Node 和 Python 两版的 `browser_fetch`、自动回退，以及 `browser_action` 的输入、点击、状态复用、区域提取和 XHR/JSON 捕获。
+`npm test` 默认不下载依赖。`npm run test:browser-live` 需要已安装 Playwright 浏览器，会用本地 JavaScript 动态页面真实烟测 Node 和 Python 两版的 `browser_fetch`、`browser_screenshot` 图片返回、自动回退，以及 `browser_action` 的输入、点击、状态复用、区域提取和 XHR/JSON 捕获。

@@ -77,10 +77,15 @@ class McpClient {
   }
 
   async call(name, args) {
+    const result = await this.callResult(name, args);
+    return (result.content || []).map((item) => item.text || "").join("\n");
+  }
+
+  async callResult(name, args) {
     const result = await this.request("tools/call", { name, arguments: args });
     const text = (result.content || []).map((item) => item.text || "").join("\n");
     assert.equal(result.isError, undefined, this.label + " " + name + " failed:\n" + text);
-    return text;
+    return result;
   }
 
   async close() {
@@ -114,6 +119,13 @@ async function runRuntime(label, command, args, url) {
     const rendered = await client.call("browser_fetch", { url, max_chars: 2000, include_links: true });
     assert.match(rendered, /Rendered by real Playwright/);
     assert.match(rendered, /\/next/);
+
+    const visual = await client.callResult("browser_screenshot", { url, format: "jpeg", width: 960, height: 640, wait_ms: 100 });
+    const visualText = visual.content.find((item) => item.type === "text")?.text || "";
+    const visualImage = visual.content.find((item) => item.type === "image");
+    assert.match(visualText, /Live Browser Fixture/);
+    assert.equal(visualImage?.mimeType, "image/jpeg");
+    assert.ok((visualImage?.data || "").length > 500);
 
     const automatic = await client.call("fetch_url", { url, max_chars: 2000, browser: "auto" });
     assert.match(automatic, /Rendered by real Playwright/);

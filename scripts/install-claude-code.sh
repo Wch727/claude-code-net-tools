@@ -6,6 +6,9 @@ SCOPE="local"
 RUNTIME="auto"
 PROXY=""
 PROVIDERS=""
+BROWSER=""
+BROWSER_PROFILE=""
+BROWSER_HEADED="0"
 FORCE="0"
 
 while [[ $# -gt 0 ]]; do
@@ -15,16 +18,20 @@ while [[ $# -gt 0 ]]; do
     --runtime) RUNTIME="$2"; shift 2 ;;
     --proxy) PROXY="$2"; shift 2 ;;
     --providers) PROVIDERS="$2"; shift 2 ;;
+    --browser) BROWSER="$2"; shift 2 ;;
+    --browser-profile) BROWSER_PROFILE="$2"; shift 2 ;;
+    --browser-headed) BROWSER_HEADED="1"; shift ;;
     --python) RUNTIME="python"; shift ;;
     --force) FORCE="1"; shift ;;
     -h|--help)
       cat <<'HELP'
-Usage: scripts/install-claude-code.sh [--name net-tools] [--scope local|user|project] [--runtime auto|node|python] [--proxy URL|direct] [--providers LIST] [--force]
+Usage: scripts/install-claude-code.sh [--name net-tools] [--scope local|user|project] [--runtime auto|node|python] [--proxy URL|direct] [--providers LIST] [--browser chrome|msedge|firefox|webkit] [--browser-profile DIR] [--browser-headed] [--force]
 
 Examples:
   scripts/install-claude-code.sh
   scripts/install-claude-code.sh --proxy http://127.0.0.1:7890
   scripts/install-claude-code.sh --providers bing_rss,duckduckgo,bing_html
+  scripts/install-claude-code.sh --browser chrome --browser-profile "$HOME/.claude-net-tools/chrome-profile" --browser-headed
 HELP
       exit 0
       ;;
@@ -33,6 +40,7 @@ HELP
 done
 
 case "$SCOPE" in local|user|project) ;; *) echo "--scope must be local, user, or project" >&2; exit 2 ;; esac
+case "$BROWSER" in ""|chrome|msedge|firefox|webkit) ;; *) echo "--browser must be chrome, msedge, firefox, or webkit" >&2; exit 2 ;; esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -56,7 +64,16 @@ fi
 if [[ -n "$PROVIDERS" ]]; then
   args+=(-e "CLAUDE_NET_SEARCH_PROVIDERS=$PROVIDERS")
 fi
-if [[ -n "$PROXY" || -n "$PROVIDERS" ]]; then
+if [[ -n "$BROWSER" ]]; then
+  args+=(-e "CLAUDE_NET_BROWSER=$BROWSER")
+fi
+if [[ -n "$BROWSER_PROFILE" ]]; then
+  args+=(-e "CLAUDE_NET_BROWSER_PROFILE=$BROWSER_PROFILE")
+fi
+if [[ "$BROWSER_HEADED" == "1" ]]; then
+  args+=(-e "CLAUDE_NET_BROWSER_HEADED=true")
+fi
+if [[ -n "$PROXY" || -n "$PROVIDERS" || -n "$BROWSER" || -n "$BROWSER_PROFILE" || "$BROWSER_HEADED" == "1" ]]; then
   args+=(--)
 fi
 

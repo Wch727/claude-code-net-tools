@@ -86,6 +86,7 @@
 - `browser_status`：显示 Playwright 命令、默认引擎、缓存、profile，并可用 `live=true` 打开真实网页诊断。
 - `browser_search`：打开 Google、Bing 或 DuckDuckGo 的真实搜索页，执行 JavaScript 后按页面原顺序提取标题、链接和摘要，不打分重排。
 - `browser_fetch`：打开目标 URL，读取渲染后的正文和链接，支持 `max_chars`、`offset` 和 `next_offset` 分段读取。
+- `browser_screenshot`：直接搜索、打开 URL，或复用已有命名会话，并以一次 MCP 调用返回页面文字和图片。默认截图当前视口；适合知识面板、图表、图片和仅靠 DOM 文字难以理解的页面。
 - `browser_action`：复用命名浏览器会话，支持 `open|snapshot|click|type|wait|scroll|extract|download|network|close`。定位目标时优先使用 `role+name` 或 `label`，CSS 只作为回退；不接受任意 JavaScript。
 - `browser_action action=network`：在点击指定目标（未指定目标时重新加载页面）的同时捕获 XHR/fetch，可用 `url_pattern` 限定 URL，并返回 JSON/text 预览。
 - `search_web`、`search_web_focused`、`fetch_url` 的 `browser` 参数支持 `never|auto|always`。`auto` 在结果不足、独立来源不足、HTTP 失败、反爬页或 JavaScript 空壳时回退。
@@ -96,11 +97,12 @@
 {"action":"open","session":"docs","url":"https://example.com/app"}
 {"action":"type","session":"docs","target":{"label":"关键词"},"value":"BERT"}
 {"action":"click","session":"docs","target":{"role":"button","name":"搜索"}}
+{"session":"docs","format":"jpeg","width":1280,"height":900}
 {"action":"network","session":"docs","target":{"role":"button","name":"加载更多"},"url_pattern":"/api/"}
 {"action":"close","session":"docs"}
 ```
 
-每个动作都是一次 Playwright CLI 往返。先看 `open/snapshot` 返回的交互元素，再执行必要动作，可以减少延迟和误点。
+上面第四行是 `browser_screenshot` 参数，其余是 `browser_action` 参数。每个动作都是一次 Playwright CLI 往返。先看 `open/snapshot` 返回的交互元素，视觉状态不清楚时再截图，可以减少延迟和误点。截图是观察材料；涉及事实结论时仍应打开结果来源并读取正文。
 
 浏览器 session 在 MCP 进程内复用。设置 `CLAUDE_NET_BROWSER_PROFILE` 可使用专用持久化 profile 保存浏览器 cookie 和登录状态；它与 `session_create` 的 HTTP cookie jar 相互独立。
 

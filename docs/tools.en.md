@@ -86,6 +86,7 @@ Rules:
 - `browser_status`: shows the Playwright command, default engine, cache, and profile; `live=true` opens a real page for diagnosis.
 - `browser_search`: opens a real Google, Bing, or DuckDuckGo results page, executes JavaScript, and extracts titles, links, and snippets in page order without reranking.
 - `browser_fetch`: opens a target URL and returns rendered body text and links with `max_chars`, `offset`, and `next_offset` paging.
+- `browser_screenshot`: searches, opens a URL, or reuses an existing named session and returns both rendered text and an MCP image. It defaults to the current viewport and is useful for knowledge panels, charts, images, and pages that DOM text alone cannot explain.
 - `browser_action`: reuses a named browser session and supports `open|snapshot|click|type|wait|scroll|extract|download|network|close`. Prefer `role+name` or `label` locators; CSS is a fallback. Arbitrary JavaScript is not accepted.
 - `browser_action action=network`: captures XHR/fetch while clicking a target, or while reloading when no target is supplied. Use `url_pattern` to limit URLs and return JSON/text previews.
 - `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`. `auto` falls back for insufficient results, insufficient independent source coverage, HTTP failure, anti-bot pages, or JavaScript-only shells.
@@ -96,11 +97,12 @@ Complex-page example:
 {"action":"open","session":"docs","url":"https://example.com/app"}
 {"action":"type","session":"docs","target":{"label":"Keyword"},"value":"BERT"}
 {"action":"click","session":"docs","target":{"role":"button","name":"Search"}}
+{"session":"docs","format":"jpeg","width":1280,"height":900}
 {"action":"network","session":"docs","target":{"role":"button","name":"Load more"},"url_pattern":"/api/"}
 {"action":"close","session":"docs"}
 ```
 
-Each action is one Playwright CLI round trip. Inspect the interactive elements returned by `open/snapshot`, then issue only the necessary actions to reduce latency and accidental clicks.
+The fourth line contains `browser_screenshot` arguments; the other lines are `browser_action` arguments. Each action is one Playwright CLI round trip. Inspect the interactive elements returned by `open/snapshot`, then capture a screenshot only when the visual state matters. A screenshot is observation material; verify factual claims by opening and reading the underlying source.
 
 The browser session is reused for the MCP process lifetime. Set `CLAUDE_NET_BROWSER_PROFILE` to a dedicated persistent profile for browser cookies and login state. It is separate from the HTTP cookie jar managed by `session_create`.
 

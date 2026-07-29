@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const evalIndex = args.indexOf("eval");
@@ -26,7 +26,23 @@ if (sourceIndex >= 0) {
     process.stderr.write("invalid Playwright function: " + error.message + "\n");
     process.exit(1);
   }
-  if (source.includes("targetLocator") && source.includes("Interactive elements") === false) {
+  if (source.includes("page.screenshot")) {
+    const match = source.match(/const options = ([^\n]+);/);
+    if (!match) {
+      process.stderr.write("screenshot options were not serialized\n");
+      process.exit(1);
+    }
+    const options = JSON.parse(match[1]);
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII=", "base64");
+    writeFileSync(options.path, png);
+    result = JSON.stringify({
+      url: "https://www.google.com/search?q=visual+fixture",
+      title: "Visual Fixture",
+      text: "Rendered visual fixture body",
+      totalChars: 28,
+      viewport: { width: options.width, height: options.height },
+    });
+  } else if (source.includes("targetLocator") && source.includes("Interactive elements") === false) {
     result = JSON.stringify({
       url: "https://example.test/complex",
       title: "Complex Fixture",

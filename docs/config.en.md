@@ -41,6 +41,7 @@ Common options:
 .\scripts\install-claude-code.ps1 -Proxy http://127.0.0.1:7890
 .\scripts\install-claude-code.ps1 -Proxy direct
 .\scripts\install-claude-code.ps1 -Providers bing_rss,duckduckgo,bing_html
+.\scripts\install-claude-code.ps1 -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
 .\scripts\install-claude-code.ps1 -Runtime python
 .\scripts\install-claude-code.ps1 -Scope user
 .\scripts\install-claude-code.ps1 -Force
@@ -101,6 +102,14 @@ npx --yes --package @playwright/cli playwright-cli install-browser
 
 The Python build launches the same Playwright CLI, so Node.js/npm is still required when browser tools are enabled. HTTP mode does not require Playwright.
 
+The closest mode to an everyday browser uses an installed Chrome/Edge channel, a dedicated persistent profile, and a visible window. Do not point this at an everyday profile that is currently open. If a search site presents a captcha, complete it manually in the visible window; later calls reuse that profile's cookies:
+
+```powershell
+.\scripts\install-claude-code.ps1 -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
+```
+
+Omit `-BrowserHeaded` to keep the browser hidden, though a fresh headless browser is more likely to trigger public search-engine bot checks.
+
 | Variable | Purpose |
 | --- | --- |
 | `CLAUDE_NET_BROWSER_FALLBACK` | Default browser policy: `never`, `auto`, or `always`. Default `auto`. |
@@ -111,6 +120,7 @@ The Python build launches the same Playwright CLI, so Node.js/npm is still requi
 | `CLAUDE_NET_BROWSER_TIMEOUT` | Browser command timeout in seconds. Default `35`. |
 | `CLAUDE_NET_BROWSER_CACHE_TTL_MS` | Browser-search cache duration. Default `300000` ms. |
 | `CLAUDE_NET_BROWSER_WORK_DIR` | Playwright snapshot/session workspace. Defaults to the system temp directory instead of the Claude Code project. |
+| `CLAUDE_NET_MAX_SCREENSHOT_BYTES` | Maximum image payload returned by `browser_screenshot`. Default `5000000`; oversized captures first fall back to a compressed viewport JPEG. |
 | `CLAUDE_NET_PLAYWRIGHT_COMMAND` | Advanced: custom `playwright-cli` executable. |
 
 ## API Keys

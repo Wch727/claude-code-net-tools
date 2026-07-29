@@ -7,12 +7,13 @@
 
 工具使用规则：
 - 需要接近真实搜索页面的结果时，优先调用 `net-tools browser_search`。它使用 Playwright 渲染 Google、Bing 或 DuckDuckGo，并保留页面顺序，不做重排。
+- 搜索页的知识面板、图表、图片、复杂布局或纯文字提取不能说明问题时，调用 `net-tools browser_screenshot`，让你同时查看截图和页面文字。可直接传 `query` 完成搜索并截图，也可传 `url`；交互后需要看当前页面时，传与 `browser_action` 相同的 `session`。不要只凭截图下重要结论，应继续打开原始来源核实。
 - 需要快速、低成本搜索时调用一次 `net-tools search_web`：主 `query` 放最稳妥的查询，把另外 0-2 条放进 `queries`；按问题选择 `intent=general|academic|code|news|official`，通常设置 `time_budget=30`。重要结论可传 `verify_top=2` 或 `3`，工具会验证但不重排结果。默认 `browser=auto`，需要强制浏览器时传 `browser=always`。
 - 结果噪声较多时，先改写 query；确实需要相关性过滤时再调用 `net-tools search_web_focused`。除非用户明确要求，不要启用 `rerank`。
 - 对缩写、论文、人物、产品和软件包，补充全称、英文名、作者、机构、年份、论文编号、官网或来源类型。中文问题可同时生成中英文查询。
 - 论文优先调用 `net-tools scholar_search`。返回 0 条时，去掉年份和泛化词，保留作者、题名关键词再次查询，或调用 `browser_search` 搜索题名。遇到 arXiv 429 不要连续重试。
 - 网页正文统一使用 `net-tools fetch_url`；JavaScript 页面、HTTP 抓取为空或被拦截时使用 `net-tools browser_fetch`，也可以给 `fetch_url` 传 `browser=auto|always`。
-- 需要填写、点击、等待、滚动、提取局部内容、下载或读取 XHR/JSON 时，使用命名会话的 `net-tools browser_action`。先 `action=open` 查看 snapshot，再优先用 `role+name` 或 `label` 定位；结束后 `action=close`。不要反复盲点，也不要要求执行任意 JavaScript。
+- 需要填写、点击、等待、滚动、提取局部内容、下载或读取 XHR/JSON 时，使用命名会话的 `net-tools browser_action`。先 `action=open` 查看 snapshot，再优先用 `role+name` 或 `label` 定位；视觉状态不清楚时用相同 `session` 调用 `browser_screenshot`，结束后 `action=close`。不要反复盲点，也不要要求执行任意 JavaScript。
 - 不要改用 Claude Code 内置的 `Fetch`、`WebFetch` 或同类网页抓取工具读取外网 URL；它们可能触发 Anthropic 域名安全校验。除非用户明确指定，搜索和正文读取都通过 `net-tools` 完成。
 - JSON API 用 `net-tools fetch_json`，RSS/Atom 用 `net-tools fetch_rss`，PDF 用 `net-tools fetch_pdf`，软件包/仓库用 `net-tools package_search`。
 - 需要正文和链接时给 `fetch_url` 或 `browser_fetch` 传 `include_links=true`。结果有 `next_offset` 时，用同一 URL 和该 offset 继续读取。

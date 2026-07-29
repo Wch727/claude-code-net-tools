@@ -24,6 +24,7 @@ A good run does not require every provider to succeed. It should show the active
 ```text
 Use net-tools browser_status with live=true.
 Use net-tools browser_search to search "Rosenblatt XOR problem Principles of Neurodynamics 1962" count 3, preserving browser order.
+Use net-tools browser_screenshot with query "BERT" engine auto, and describe the visible search modules before opening the original paper source.
 Use net-tools scholar_search to search "McDermott R1 rule-based configurer computer systems 1982" count 3 with provider semantic_scholar; if empty, report the relaxed query attempt.
 Use net-tools browser_fetch to read https://en.wikipedia.org/wiki/Frank_Rosenblatt with include_links true. Do not use Claude Code built-in Fetch.
 For an interactive page, use browser_action action=open with a named session, inspect its snapshot, then use role+name or label targets for type/click/extract; use action=network with url_pattern when the useful data comes from XHR/fetch, and close the session afterward.
@@ -55,8 +56,9 @@ npm run test:browser-live
 - `fetch_url` paging/link extraction plus protection against false blocked-page diagnostics when complete articles contain ordinary phrases such as “security check.”
 - `search_web` multi-query merging, total time budget, and `verify_top` source labels.
 - `browser_action` schema, named sessions, and interactive-element output.
+- `browser_screenshot` page text, MCP image payload, and image MIME type.
 - `session_create/session_status/session_clear` plus session headers/cookies/referer.
 - `search_status` provider diagnostics.
 - arXiv HTTP 429 cooldown without repeated requests.
 
-`npm test` does not download dependencies. `npm run test:browser-live` requires an installed Playwright browser and uses local JavaScript-rendered pages to test `browser_fetch`, automatic fallback, and `browser_action` typing, clicking, state reuse, scoped extraction, and XHR/JSON capture in both Node and Python builds.
+`npm test` does not download dependencies. `npm run test:browser-live` requires an installed Playwright browser and uses local JavaScript-rendered pages to test `browser_fetch`, `browser_screenshot` image output, automatic fallback, and `browser_action` typing, clicking, state reuse, scoped extraction, and XHR/JSON capture in both Node and Python builds.

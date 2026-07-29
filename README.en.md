@@ -51,13 +51,30 @@ If you do not need a proxy, leave `CLAUDE_NET_PROXY` unset or set it to `direct`
 - `scholar_search`: paper search through Crossref, Semantic Scholar, and arXiv.
 - `package_search`: npm, PyPI, and GitHub repository search.
 - `fetch_url` / `extract_links` / `fetch_json` / `fetch_rss` / `fetch_pdf`: fetch webpages, links, JSON, RSS/Atom, and PDFs.
+- `browser_screenshot`: search or open a URL in a real browser and return both page text and an image for Claude Code to inspect.
 - `browser_action`: open, click, type, wait, scroll, extract, download, and capture XHR/JSON in a named Playwright session.
 - `session_create` / `session_status` / `session_clear`: named HTTP sessions with default headers/cookies/referer and a dedicated cookie jar.
 - `proxy_status` / `search_status` / `pdf_status`: focused diagnostics for routes, provider status, and PDF extraction.
 
 ## Browser Search (Optional)
 
-`browser_search` and `browser_fetch` use local Playwright to open real search pages and read JavaScript-rendered content; `browser_action` handles forms, buttons, lazy loading, downloads, and page-issued JSON requests. `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`; the default `auto` falls back when HTTP search returns too few results, too little independent-source coverage, or a page is blocked/JavaScript-only.
+`browser_search` and `browser_fetch` use local Playwright to open real search pages and read JavaScript-rendered content. `browser_screenshot` also returns an MCP image so Claude Code can inspect search layouts, knowledge panels, charts, and complex components. `browser_action` handles forms, buttons, lazy loading, downloads, and page-issued JSON requests. `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`; the default `auto` falls back when HTTP search returns too few results, too little independent-source coverage, or a page is blocked/JavaScript-only.
+
+Search and inspect the page in one call:
+
+```text
+Use net-tools browser_screenshot with query "BERT" engine auto.
+```
+
+For interactive flows, use `browser_action` first and then call `browser_screenshot` with the same `session`. Screenshots default to the current viewport as JPEG; use `full_page=true` only when the full layout matters.
+
+Public search engines may block a fresh headless browser. To behave more like an everyday browser, register the MCP with an isolated persistent Chrome profile:
+
+```powershell
+.\scripts\install-claude-code.ps1 -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
+```
+
+Captchas must be completed manually in the visible window; the tool does not bypass them. Do not point the profile at an everyday Chrome profile that is currently open.
 
 Check and install browser support before first use:
 
