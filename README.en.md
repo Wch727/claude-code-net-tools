@@ -18,7 +18,7 @@ Only these three are listed by default so Claude Code has fewer overlapping choi
 
 ## How It Works
 
-1. Claude Code rewrites the user's request into useful search queries.
+1. Claude Code interprets the request and prepares queries. A standalone CJK name or exact entity is preserved without adding filler such as “who is” or “profile”; the tool also extracts that entity first when such filler was supplied.
 2. `web_search` obtains candidate sources from free providers, optional search APIs, or browser search.
 3. Claude Code selects a source and calls `read_url`.
 4. `read_url` downloads and extracts one complete bounded snapshot, then returns only the requested `max_chars` window.
@@ -123,7 +123,7 @@ Claude Code can then use one browser interface:
 - `action=screenshot`: return an image plus extractable page text.
 - `action=open|snapshot|click|type|wait|scroll|extract|download|network|close`: operate a complex page through a named session.
 
-Browser mode does not bypass login, captcha, paywall, or authorization. For manual login/captcha with a dedicated profile:
+Browser mode does not bypass login, captcha, paywall, or authorization. When a challenge page is detected, the tool reports that Playwright works but the page requires verification instead of returning the challenge as content. For manual login/captcha with a dedicated profile:
 
 ```powershell
 .\scripts\install-claude-code.ps1 -Scope user -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
@@ -186,7 +186,7 @@ Restart Claude Code. Change the value to `compact` or remove it to restore the t
 
 ### Search is empty or slow
 
-Have Claude Code rewrite the query with full names, English names, organizations, years, paper titles, or official-site terms. Free engines may rate-limit or require a captcha; use `browser_interact action=search`, change providers, or configure a search API.
+Search a full CJK name verbatim before adding “who is”, “profile”, or similar filler. For broader topics, add English names, organizations, years, paper titles, or official-site terms. Free engines may rate-limit or require a captcha; use `browser_interact action=search`, change providers, or configure a search API.
 
 ## Documentation
 

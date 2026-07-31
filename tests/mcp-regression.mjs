@@ -149,6 +149,7 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
   try {
     const initialization = await client.initialize();
     assertIncludes(initialization.instructions, "Use only net-tools for external web access", `${label} automatic MCP instructions`);
+    assertIncludes(initialization.instructions, "preserve the exact entity text as the primary unquoted query", `${label} exact entity instructions`);
     assertIncludes(initialization.instructions, "make one web_search call with verify_top=0", `${label} cost-aware search instructions`);
     assertIncludes(initialization.instructions, "continue using the same document_id and that offset", `${label} MCP snapshot pagination instructions`);
     assertIncludes(initialization.instructions, "built-in free defaults", `${label} free-provider instructions`);
@@ -160,6 +161,7 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assert.deepEqual(map.get("web_search")?.inputSchema?.required, ["query"], `${label} web_search required fields`);
     assertIncludes(map.get("web_search")?.description, "rather than relying on snippets or Claude Code Fetch/WebFetch", `${label} automatic search-to-read guidance`);
     assertIncludes(map.get("web_search")?.description, "Routine tasks should use one call", `${label} automatic web_search guidance`);
+    assertIncludes(map.get("web_search")?.description, "Exact CJK entity matches are filtered deterministically", `${label} exact CJK entity guidance`);
     assertIncludes(map.get("read_url")?.description, "offset=next_offset", `${label} automatic read_url continuation guidance`);
     assertIncludes(map.get("web_search")?.inputSchema?.properties?.providers?.description, "paid API provider only when the user explicitly requests it", `${label} provider cost guidance`);
     assertIncludes(map.get("browser_interact")?.description, "snapshot before acting", `${label} automatic browser guidance`);
@@ -228,6 +230,21 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assertIncludes(multiSearch, "no heuristic relevance reranking", label + " search ordering");
     assert.equal(multiSearchResult.structuredContent?.intent, "academic", label + " web_search structured intent");
     assert.ok(multiSearchResult.structuredContent?.results?.length >= 1, label + " web_search structured results");
+    const entitySearchResult = await client.callToolResult("web_search", {
+      query: "马彦彪 是谁 人物介绍",
+      intent: "general",
+      count: 2,
+      browser: "always",
+      verify_top: 0,
+      time_budget: 15,
+    });
+    const entityQueryNote = (entitySearchResult.structuredContent?.notes || [])
+      .find((note) => note.startsWith("queries:"));
+    assert.ok(entityQueryNote, label + " exact CJK entity query note");
+    const normalizedEntityQueryNote = entityQueryNote.replaceAll("'", '"');
+    assertIncludes(normalizedEntityQueryNote, '"马彦彪"', label + " exact CJK entity query");
+    assert.ok(!normalizedEntityQueryNote.includes("人物介绍"), label + " CJK entity filler query must be discarded");
+
 
     const beforeLegacyPage = hitCounters.page;
     const page = await client.callTool("fetch_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, include_links: true, link_limit: 5 });

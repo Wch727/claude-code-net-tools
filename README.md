@@ -18,7 +18,7 @@
 
 ## 工作原理
 
-1. Claude Code 把用户问题改写成适合搜索的查询。
+1. Claude Code 判断问题意图并准备查询。单独的中文人名或专名保留原文，不添加“是谁”“人物介绍”等套话；即使传入了这些套话，工具也会先抽出专名本身进行搜索。
 2. `web_search` 从免费搜索源、可选搜索 API 或浏览器搜索中获取候选来源。
 3. Claude Code 选择来源并调用 `read_url`。
 4. `read_url` 一次下载并提取完整文档快照，单次只返回 `max_chars` 指定的片段。
@@ -123,7 +123,7 @@ npx --yes --package @playwright/cli playwright-cli install-browser
 - `action=screenshot`：返回页面截图和可提取文字。
 - `action=open|snapshot|click|type|wait|scroll|extract|download|network|close`：在命名 session 中连续操作复杂网页。
 
-浏览器功能不会自动绕过登录、验证码、付费墙或网站权限。需要手动登录或处理验证码时，可安装为可见浏览器并使用专用 profile：
+浏览器功能不会自动绕过登录、验证码、付费墙或网站权限。检测到验证页时，工具会明确说明“Playwright 正常，但页面要求验证”，不会把验证页冒充正文。需要手动登录或处理验证码时，可安装为可见浏览器并使用专用 profile：
 
 ```powershell
 .\scripts\install-claude-code.ps1 -Scope user -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
@@ -186,7 +186,7 @@ Windows 用户环境中设置：
 
 ### 搜索无结果或很慢
 
-先让 Claude Code 改写查询，补充英文名、机构、年份、论文题名或官网限定。免费搜索引擎可能限速或要求验证码；这时可改用 `browser_interact action=search`、调整 provider，或配置搜索 API。
+中文全名先按原文搜索，不要添加“是谁”“简介”等套话；普通主题再补充英文名、机构、年份、论文题名或官网限定。免费搜索引擎可能限速或要求验证码；这时可改用 `browser_interact action=search`、调整 provider，或配置搜索 API。
 
 ## 文档
 

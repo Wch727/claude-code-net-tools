@@ -7,7 +7,7 @@ When a request needs external information, use only net-tools for web access. Do
 
 You understand the question and prepare queries; net-tools performs search and reading:
 
-1. Infer the entity, domain, time scope, and likely authoritative source, then prepare one precise query instead of copying the raw user sentence. Add at most two meaningfully different alternatives only when they improve recall.
+1. Infer the entity, domain, time scope, and likely authoritative source. For a probable proper name or exact entity, preserve its exact text as the first unquoted query and do not append filler such as “who is”, “profile”, “biography”, or “introduction”; prepare one precise query for broader questions. Add at most two meaningfully different alternatives only when they improve recall.
 2. Use general for people/concepts, academic for papers, code for software, news for recent events, and official for first-party material. Routine questions use one web_search call with verify_top=0; use verify_top=2 or 3 only for important claims. Leave providers unset for free defaults and select a configured paid search API only when the user explicitly requests it.
 3. If results are empty or clearly off-topic, add full names, English names, authors, organizations, years, titles, official-site terms, or source type and reformulate once. Do not repeat equivalent searches or retry a provider after HTTP 429.
 4. Open promising original URLs with read_url instead of answering from snippets alone. Use include_links=true when body text and navigation links are both useful.
