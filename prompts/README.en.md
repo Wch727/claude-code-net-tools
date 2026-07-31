@@ -1,34 +1,18 @@
-# Claude Code Prompt Setup
+# Built-in Claude Code Search Policy
 
-This directory provides copyable prompts and replacement instructions for `claude-code-net-tools`.
+The web policy is embedded in the MCP initialization instructions and the three primary tool descriptions. Claude Code receives it automatically after connecting; nothing needs to be copied into `CLAUDE.md`, custom instructions, or a first message.
 
 ## Files
 
-- `claude-code-search.zh.md`: Chinese prompt.
-- `claude-code-search.en.md`: English prompt.
-- `README.zh.md`: Chinese setup guide.
-- `README.en.md`: English setup guide.
+- `claude-code-search.zh.md`: Chinese policy reference.
+- `claude-code-search.en.md`: English policy reference.
+- `README.zh.md`: Chinese guide.
+- `README.en.md`: English guide.
 
-## Enable In Claude Code
+## Automatic Activation
 
-1. Install and enable this MCP server first. The default server name is `net-tools`.
-2. Choose one prompt file: use `claude-code-search.zh.md` for Chinese, or `claude-code-search.en.md` for English.
-3. Copy the full `text` code block from that file.
-4. Paste it into the Claude Code instruction surface your setup actually loads, such as project `CLAUDE.md`, global memory/custom instructions, or the first message of a session for quick testing.
-5. If your MCP server name is not `net-tools`, replace `net-tools` in the prompt with your actual server name, such as `net-tools-py`.
-6. Save and restart, reload, or open a new Claude Code session so the instructions become active.
+1. Install and enable the MCP server. Its default name is `net-tools`.
+2. Restart, reload, or open a new session so Claude Code reconnects to it.
+3. The server sends the overall policy during initialization; `web_search`, `read_url`, and `browser_interact` send their operation rules when loaded.
 
-## How To Replace The Prompt
-
-1. Edit the source prompt file, such as `claude-code-search.zh.md` or `claude-code-search.en.md`.
-2. Copy the updated `text` code block into the Claude Code instruction surface that is actually loaded.
-3. Restart, reload, or open a new session.
-
-Note: files under `prompts/` do not become active automatically. They are source copies for maintenance and copying; the active prompt is whatever Claude Code reads from your project instructions, memory, or custom instructions.
-
-## Common Edits
-
-- Change `net-tools` to your MCP server name.
-- Add preferred authoritative sources, such as official docs, arXiv, PyPI, npm, GitHub, government sites, or company docs.
-- Add language preferences, for example: "answer in Chinese, but search English sources first when they are more authoritative".
-- Add cost rules, for example: "use only free providers unless I explicitly approve a configured paid API provider".
+The Chinese and English policy files are readable documentation mirrors. The active policy lives in `MCP_INSTRUCTIONS` and the tool `description` fields in both the Node and Python servers.

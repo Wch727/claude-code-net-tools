@@ -92,7 +92,7 @@ claude mcp get net-tools
 请用 net-tools 在真实浏览器中搜索 BERT，截图搜索结果页，并打开结果中的原始论文核实。
 ```
 
-更完整的中英文 Claude Code 指令见 [prompts](prompts/README.zh.md)。这些提示词文件不会自动生效，需要放进 Claude Code 实际加载的 `CLAUDE.md`、自定义指令或会话首条消息。
+完整搜索策略已内置在 MCP 的自动说明和三个主工具的 `description` 中；安装后新开 Claude Code 会话即可生效，不需要复制提示词或修改 `CLAUDE.md`。[prompts](prompts/README.zh.md) 仅保留中英文策略说明，方便查看。
 
 ## 长网页和 PDF
 
@@ -193,7 +193,7 @@ Windows 用户环境中设置：
 - [配置、环境变量和 API key](docs/config.zh.md)
 - [三个主工具、完整兼容工具和限制](docs/tools.zh.md)
 - [测试和烟测题](docs/testing.zh.md)
-- [Claude Code 搜索提示词](prompts/README.zh.md)
+- [Claude Code 内置搜索策略](prompts/README.zh.md)
 
 开发验证：
 

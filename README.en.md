@@ -92,7 +92,7 @@ Use net-tools to read this long document. If next_offset is returned, continue w
 Use net-tools to search for BERT in a real browser, capture the results page, and open the original paper to verify the answer.
 ```
 
-Longer Chinese and English Claude Code instructions are under [prompts](prompts/README.en.md). Repository prompt files are examples only; place one in a `CLAUDE.md`, custom instruction, or first session message that Claude Code actually loads.
+The complete search policy is embedded in the MCP initialization instructions and the three primary tool descriptions. It takes effect in a new Claude Code session after installation; no prompt copying or `CLAUDE.md` edit is required. [prompts](prompts/README.en.md) now keeps Chinese and English reference copies only.
 
 ## Long Pages and PDFs
 
@@ -193,7 +193,7 @@ Have Claude Code rewrite the query with full names, English names, organizations
 - [Configuration, environment variables, and API keys](docs/config.en.md)
 - [Three main tools, compatibility tools, and limits](docs/tools.en.md)
 - [Tests and smoke-test prompts](docs/testing.en.md)
-- [Claude Code search prompt](prompts/README.en.md)
+- [Built-in Claude Code search policy](prompts/README.en.md)
 
 Development verification:
 

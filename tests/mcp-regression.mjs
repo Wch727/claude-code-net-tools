@@ -148,13 +148,21 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
   const client = new McpClient(label, command, args, cleanEnv(baseUrl, label));
   try {
     const initialization = await client.initialize();
-    assertIncludes(initialization.instructions, "Do not switch to Claude Code built-in Fetch/WebFetch", `${label} MCP instructions`);
-    assertIncludes(initialization.instructions, "continue with its document_id and that offset", `${label} MCP snapshot pagination instructions`);
+    assertIncludes(initialization.instructions, "Use only net-tools for external web access", `${label} automatic MCP instructions`);
+    assertIncludes(initialization.instructions, "make one web_search call with verify_top=0", `${label} cost-aware search instructions`);
+    assertIncludes(initialization.instructions, "continue using the same document_id and that offset", `${label} MCP snapshot pagination instructions`);
+    assertIncludes(initialization.instructions, "built-in free defaults", `${label} free-provider instructions`);
+    assertIncludes(initialization.instructions, "do not keep searching merely to reach a source quota", `${label} bounded source instructions`);
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     assert.deepEqual(names, ["browser_interact", "read_url", "web_search"], `${label} compact tool profile`);
     const map = toolMap(tools);
     assert.deepEqual(map.get("web_search")?.inputSchema?.required, ["query"], `${label} web_search required fields`);
+    assertIncludes(map.get("web_search")?.description, "rather than relying on snippets or Claude Code Fetch/WebFetch", `${label} automatic search-to-read guidance`);
+    assertIncludes(map.get("web_search")?.description, "Routine tasks should use one call", `${label} automatic web_search guidance`);
+    assertIncludes(map.get("read_url")?.description, "offset=next_offset", `${label} automatic read_url continuation guidance`);
+    assertIncludes(map.get("web_search")?.inputSchema?.properties?.providers?.description, "paid API provider only when the user explicitly requests it", `${label} provider cost guidance`);
+    assertIncludes(map.get("browser_interact")?.description, "snapshot before acting", `${label} automatic browser guidance`);
     assert.ok(map.get("read_url")?.inputSchema?.properties?.document_id, `${label} read_url document_id`);
     assert.equal(map.get("read_url")?.inputSchema?.anyOf, undefined, `${label} read_url must avoid Anthropic-rejected top-level anyOf`);
     assert.ok(map.get("read_url")?.inputSchema?.properties?.max_bytes?.default >= 20000000, `${label} read_url snapshot byte limit`);
@@ -439,6 +447,7 @@ try {
     const pythonMap = toolMap(pythonTools);
     assert.deepEqual([...nodeMap.keys()].sort(), [...pythonMap.keys()].sort(), "Node/Python tool names diverged");
     for (const name of nodeMap.keys()) {
+      assert.equal(nodeMap.get(name)?.description, pythonMap.get(name)?.description, `Node/Python descriptions diverged for ${name}`);
       assert.deepEqual(propertyKeys(nodeMap.get(name)), propertyKeys(pythonMap.get(name)), `Node/Python schema properties diverged for ${name}`);
     }
   } else {
