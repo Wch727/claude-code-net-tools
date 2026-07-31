@@ -135,7 +135,7 @@ Claude Code prepares queries and tool arguments itself. Specify providers, timeo
 | npm/PyPI/GitHub projects | `package_search` | Searches package registries or GitHub repositories. |
 | A known webpage URL | `fetch_url` | Downloads the page and extracts readable text, with pagination and optional links. |
 | JSON or RSS | `fetch_json` / `fetch_rss` | Preserves structure and formats the response. |
-| PDF | `fetch_pdf` | Downloads a PDF and extracts plain text when `pdftotext` is installed. |
+| PDF | `fetch_pdf` | Downloads and pages through PDF text; arXiv failures can fall back to HTML. |
 | Browser search page | `browser_search` | Opens Google/Bing/DuckDuckGo and extracts results in page order. |
 | JavaScript-rendered page | `browser_fetch` | Runs page JavaScript in Playwright before reading the body. |
 | Layout, charts, or images | `browser_screenshot` | Returns both page text and a screenshot. |
@@ -207,7 +207,9 @@ For this tool, merely setting a key does not call the API. Calls and charges are
 
 `fetch_pdf` can download a PDF without extra dependencies. Plain-text extraction requires Poppler `pdftotext` on PATH, or an explicit `CLAUDE_NET_PDFTOTEXT` path.
 
-Plain text is useful for abstracts, introductions, conclusions, and references. Formulas, tables, multi-column layouts, and figures may be out of order. Use a PDF reader for derivations or layout-sensitive material.
+Long papers are returned in chunks. When the result includes `next_offset`, call `fetch_pdf` again with the same PDF URL and set `offset` to that value. `max_chars` limits only the current response; it no longer limits how much text `pdftotext` may extract.
+
+For an arXiv URL, the tool defaults to the readable ar5iv HTML paper when the PDF is rate-limited, is not actually a PDF, or automatic extraction fails. Set `html_fallback=false` to disable this behavior. Plain text and HTML are useful for abstracts, introductions, conclusions, and references; use a PDF reader for formulas, tables, derivations, or layout-sensitive material.
 
 ## Troubleshooting
 
@@ -238,11 +240,13 @@ Ask Claude Code to call `proxy_status`, then `search_status live=true`. If a fre
 
 ### Claude Code's Built-in `Fetch` Says a Domain Is Unsafe
 
-That check belongs to Claude Code's built-in fetcher, not this project. Ask Claude Code: "Do not use built-in Fetch; use `net-tools fetch_url`." Use `net-tools browser_fetch` for a dynamic page.
+That check belongs to Claude Code's built-in fetcher, not this project. Since 0.11.0, the MCP initialization response tells Claude Code to stay with `net-tools`, use `browser_fetch` after a normal page fails, and not switch back to built-in `Fetch/WebFetch`. Open a new Claude Code session after upgrading; an existing session does not reload the server instructions.
 
-### A Long Page Is Truncated
+If a new session still selects built-in `Fetch`, state: "Use only `net-tools fetch_url` for external pages, use `net-tools browser_fetch` for dynamic or blocked pages, and do not use built-in Fetch/WebFetch."
 
-When `fetch_url` returns `next_offset`, request the same URL again with `offset` set to that value. `max_chars` controls one response chunk, not the download limit.
+### A Long Page or Paper Is Truncated
+
+When `fetch_url`, `browser_fetch`, or `fetch_pdf` returns `next_offset`, request the same URL again with `offset` set to that value. `max_chars` controls one response chunk, not the full download or extraction limit.
 
 ## Python Fallback
 

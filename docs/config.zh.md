@@ -89,7 +89,7 @@ macOS/Linux：
 | `CLAUDE_NET_PDFTOTEXT` | 自定义 `pdftotext` 路径。 |
 | `CLAUDE_NET_DEBUG` | 输出更详细的错误信息。 |
 
-高级/测试用：`CLAUDE_NET_ARXIV_API_URL` 可覆盖 arXiv API endpoint；普通用户保持未设置。
+高级/测试用：`CLAUDE_NET_ARXIV_API_URL` 可覆盖 arXiv API endpoint；`CLAUDE_NET_ARXIV_HTML_BASE` 可覆盖 `fetch_pdf` 的 arXiv HTML 回退地址，默认 `https://ar5iv.labs.arxiv.org/html/`。普通用户保持未设置。
 
 ## Playwright 浏览器配置
 

@@ -89,7 +89,7 @@ Do not register the same `net-tools` name in multiple scopes. If `claude mcp lis
 | `CLAUDE_NET_PDFTOTEXT` | Custom `pdftotext` path. |
 | `CLAUDE_NET_DEBUG` | Print more detailed error messages. |
 
-Advanced/testing: `CLAUDE_NET_ARXIV_API_URL` overrides the arXiv API endpoint. Normal users should leave it unset.
+Advanced/testing: `CLAUDE_NET_ARXIV_API_URL` overrides the arXiv API endpoint. `CLAUDE_NET_ARXIV_HTML_BASE` overrides the arXiv HTML fallback used by `fetch_pdf`; its default is `https://ar5iv.labs.arxiv.org/html/`. Normal users should leave both unset.
 
 ## Playwright Browser Configuration
 

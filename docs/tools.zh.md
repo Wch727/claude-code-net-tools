@@ -42,9 +42,9 @@
 - `extract_links`：抓取页面并提取规范化链接，可限制同域名。如果同时需要正文和链接，优先用 `fetch_url include_links=true`。
 - `fetch_json`：抓取 JSON endpoint 并格式化输出。
 - `fetch_rss`：抓取 RSS/Atom feed 并输出条目。
-- `fetch_pdf`：下载 PDF，并在安装 `pdftotext` 时提取文本；支持 `extractor: auto|pdftotext|none`。
+- `fetch_pdf`：下载 PDF，并在安装 `pdftotext` 时分段提取文本；支持 `offset`、`next_offset`、`extractor: auto|pdftotext|none` 和 arXiv HTML 回退。
 
-`fetch_url` 的 `max_chars` 是单次输出上限，不代表页面只下载这么多字符。结果里如果出现 `next_offset`，继续调用同一个 URL，并把 `offset` 设成 `next_offset` 即可分段读取。
+`fetch_url`、`browser_fetch` 和 `fetch_pdf` 的 `max_chars` 是单次输出上限，不代表只下载或提取这么多字符。结果里如果出现 `next_offset`，继续调用同一个 URL，并把 `offset` 设成 `next_offset` 即可分段读取。
 
 ## Named Session
 
@@ -79,7 +79,9 @@
 
 ## PDF 限制
 
-`fetch_pdf` 依赖本机 `pdftotext`。它适合快速读摘要、引言、结论和参考信息；对公式、表格、图片说明、复杂版式论文，纯文本结果可能乱序。遇到这类文档，建议先用 `fetch_pdf extractor=none` 验证下载，再用本机 PDF 阅读器或后续浏览器/OCR 能力处理。
+`fetch_pdf` 依赖本机 `pdftotext`。每次调用只返回 `max_chars` 指定的一段；有 `next_offset` 就继续读取，不需要把 `max_chars` 调得很大。对 arXiv URL，PDF 下载失败、内容不是 PDF，或 `extractor=auto` 提取失败时会默认改读 ar5iv HTML；传 `html_fallback=false` 可关闭。
+
+它适合快速读摘要、引言、结论和参考信息；对公式、表格、图片说明、复杂版式论文，纯文本或 HTML 结果仍可能乱序。遇到这类文档，应使用本机 PDF 阅读器或后续 OCR/视觉能力核对。
 
 ## 浏览器模式与边界
 

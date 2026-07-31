@@ -42,9 +42,9 @@ Example:
 - `extract_links`: fetches a page and extracts normalized links, optionally limited to the same domain. If you need both body text and links, prefer `fetch_url include_links=true`.
 - `fetch_json`: fetches a JSON endpoint and pretty-prints parsed JSON.
 - `fetch_rss`: fetches RSS/Atom feeds and returns entries.
-- `fetch_pdf`: downloads a PDF and extracts text when `pdftotext` is installed; supports `extractor: auto|pdftotext|none`.
+- `fetch_pdf`: downloads a PDF and pages through extracted text when `pdftotext` is installed; supports `offset`, `next_offset`, `extractor: auto|pdftotext|none`, and arXiv HTML fallback.
 
-`fetch_url` `max_chars` is the output limit for one tool call; it is not the downloaded page size. If the result includes `next_offset`, call the same URL again with `offset` set to that value.
+For `fetch_url`, `browser_fetch`, and `fetch_pdf`, `max_chars` limits one tool response; it is not the full download or extraction size. If the result includes `next_offset`, call the same URL again with `offset` set to that value.
 
 ## Named Sessions
 
@@ -79,7 +79,9 @@ Rules:
 
 ## PDF Limits
 
-`fetch_pdf` relies on local `pdftotext`. It is useful for abstracts, introductions, conclusions, and bibliographic information. For formulas, tables, captions, and complex scientific layouts, plain text may be out of order. For those documents, first use `fetch_pdf extractor=none` to verify download, then read the PDF locally or with browser/OCR support.
+`fetch_pdf` relies on local `pdftotext`. Each call returns one `max_chars` chunk; follow `next_offset` instead of choosing an oversized output limit. For an arXiv URL, a failed/non-PDF download or failed `extractor=auto` run defaults to readable ar5iv HTML; set `html_fallback=false` to disable it.
+
+It is useful for abstracts, introductions, conclusions, and bibliographic information. Formulas, tables, captions, and complex scientific layouts may still be out of order in plain text or HTML, so use a PDF reader or OCR/visual tooling for layout-sensitive work.
 
 ## Browser Mode And Boundaries
 

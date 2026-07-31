@@ -79,7 +79,7 @@ class McpClient {
   }
 
   async initialize() {
-    await this.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "regression-test", version: "0" } });
+    return this.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "regression-test", version: "0" } });
   }
 
   async listTools() {
@@ -146,12 +146,18 @@ function findPython() {
 async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
   const client = new McpClient(label, command, args, cleanEnv(baseUrl, label));
   try {
-    await client.initialize();
+    const initialization = await client.initialize();
+    assertIncludes(initialization.instructions, "Do not switch to Claude Code built-in Fetch/WebFetch", `${label} MCP instructions`);
+    assertIncludes(initialization.instructions, "continue the same URL with that offset", `${label} MCP pagination instructions`);
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "browser_status", "browser_search", "browser_fetch", "browser_screenshot", "browser_action", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
       assert.ok(names.includes(required), `${label} missing tool ${required}`);
     }
+    const fetchPdfTool = toolMap(tools).get("fetch_pdf");
+    assertIncludes(fetchPdfTool?.description, "use instead of built-in Fetch/WebFetch", `${label} fetch_pdf description`);
+    assert.ok(fetchPdfTool?.inputSchema?.properties?.offset, `${label} fetch_pdf must expose offset`);
+    assert.ok(fetchPdfTool?.inputSchema?.properties?.html_fallback, `${label} fetch_pdf must expose html_fallback`);
     const searchWebRequired = toolMap(tools).get("search_web")?.inputSchema?.required || [];
     assert.deepEqual(
       [...searchWebRequired].sort(),
@@ -224,6 +230,18 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     const continued = await client.callTool("fetch_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, offset: 500 });
     assertIncludes(continued, "Content range: characters 500-", `${label} fetch_url offset`);
 
+    const pdfHealth = await client.callTool("pdf_status", {});
+    if (pdfHealth.includes("Status: available")) {
+      const firstPdfPage = await client.callTool("fetch_pdf", { url: `${baseUrl}/paper.pdf`, max_chars: 500 });
+      assertIncludes(firstPdfPage, "Content range: characters 0-500", `${label} fetch_pdf first page`);
+      assertIncludes(firstPdfPage, "next_offset: 500", `${label} fetch_pdf next offset`);
+      assertIncludes(firstPdfPage, "Long PDF fixture line", `${label} fetch_pdf extracted text`);
+      const secondPdfPage = await client.callTool("fetch_pdf", { url: `${baseUrl}/paper.pdf`, max_chars: 500, offset: 500 });
+      assertIncludes(secondPdfPage, "Content range: characters 500-1000", `${label} fetch_pdf continuation`);
+    } else {
+      console.warn(`Skipping ${label} PDF pagination smoke: pdftotext is unavailable.`);
+    }
+
     const gbk = await client.callTool("fetch_url", { url: `${baseUrl}/gbk`, extract: "readable", max_chars: 800 });
     assertIncludes(gbk, "中文", `${label} gbk charset decode`);
 
@@ -273,13 +291,49 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
   }
 }
 
+function buildPdf(lines) {
+  const escapePdfText = (value) => value.replace(/([\\()])/g, "\\$1");
+  const content = [
+    "BT",
+    "/F1 9 Tf",
+    "10 TL",
+    "72 760 Td",
+    ...lines.flatMap((line, index) => index === 0 ? [`(${escapePdfText(line)}) Tj`] : ["T*", `(${escapePdfText(line)}) Tj`]),
+    "ET",
+  ].join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(content, "latin1")} >>\nstream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf, "latin1"));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+
 const longText = Array.from({ length: 90 }, (_, index) => `Long fixture paragraph ${index} keeps enough readable text for pagination.`).join(" ");
+const longPdf = buildPdf(Array.from({ length: 70 }, (_, index) => `Long PDF fixture line ${String(index).padStart(3, "0")}: pagination keeps reading beyond the first chunk.`));
 const arxivHitCounter = { count: 0 };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   if (url.pathname === "/page") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><html><head><title>Fixture</title></head><body><article><h1>Fixture Page</h1><p>${longText}</p><a href="/alpha">Alpha</a><a href="/beta">Beta</a><a href="https://example.org/out">External</a></article></body></html>`);
+    return;
+  }
+  if (url.pathname === "/paper.pdf") {
+    res.writeHead(200, { "content-type": "application/pdf", "content-length": longPdf.length });
+    res.end(longPdf);
     return;
   }
   if (url.pathname === "/gbk") {

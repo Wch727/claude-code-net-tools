@@ -135,7 +135,7 @@ Claude Code 会自己准备查询词和工具参数。只有调试特定 provide
 | npm/PyPI/GitHub 项目 | `package_search` | 查询包注册表或 GitHub repositories。 |
 | 已知网页 URL | `fetch_url` | 下载页面并提取可读正文；支持分段读取和链接提取。 |
 | JSON 或 RSS | `fetch_json` / `fetch_rss` | 保留结构并格式化输出。 |
-| PDF | `fetch_pdf` | 下载 PDF；安装 `pdftotext` 后可提取纯文本。 |
+| PDF | `fetch_pdf` | 下载并分段读取 PDF；arXiv PDF 失败时可回退到 HTML。 |
 | 浏览器搜索页 | `browser_search` | 打开 Google/Bing/DuckDuckGo 并按页面原顺序提取结果。 |
 | JavaScript 动态页面 | `browser_fetch` | 用 Playwright 执行页面 JavaScript 后读取正文。 |
 | 需要看布局、图表或图片 | `browser_screenshot` | 返回页面文字和截图。 |
@@ -207,7 +207,9 @@ npx --yes --package @playwright/cli playwright-cli install-browser
 
 `fetch_pdf` 下载 PDF 不需要额外依赖。要提取文本，需安装 Poppler `pdftotext` 并放入 PATH，或设置 `CLAUDE_NET_PDFTOTEXT`。
 
-纯文本适合摘要、引言、结论和参考文献；公式、表格、多栏排版和图片可能乱序。涉及推导或版式时，应下载后用 PDF 阅读器查看，而不是只依赖提取文本。
+长论文按段返回：结果出现 `next_offset` 时，用同一个 PDF URL 再调用 `fetch_pdf`，并把 `offset` 设置为该值。`max_chars` 只控制本次返回多少文字，不再限制 `pdftotext` 能提取的全文长度。
+
+对 arXiv URL，PDF 下载被 429 限速、返回的不是 PDF，或 `extractor=auto` 提取失败时，工具默认改读 ar5iv 的 HTML 论文页；传 `html_fallback=false` 可关闭。纯文本和 HTML 适合摘要、引言、结论和参考文献；公式、表格、多栏排版和图片仍可能乱序，涉及推导或版式时应使用 PDF 阅读器。
 
 ## 常见问题
 
@@ -238,11 +240,13 @@ claude mcp get net-tools
 
 ### Claude Code 内置 `Fetch` 报域名不安全
 
-这是 Claude Code 内置抓取工具的校验，不是本项目返回的错误。提示 Claude Code“不要使用内置 Fetch，改用 `net-tools fetch_url`”；动态页面改用 `net-tools browser_fetch`。
+这是 Claude Code 内置抓取工具的校验，不是本项目返回的错误。0.11.0 起，MCP 连接时会直接告诉 Claude Code 始终使用 `net-tools`，普通页面失败后改用 `browser_fetch`，不要切回内置 `Fetch/WebFetch`。升级后要新开一个 Claude Code 会话，旧会话不会重新读取这条指令。
 
-### 长网页被截断
+若新会话仍主动调用内置 `Fetch`，可在当前问题里明确说：“外部网页只用 `net-tools fetch_url`；动态或受阻页面用 `net-tools browser_fetch`；不要使用内置 Fetch/WebFetch。”
 
-`fetch_url` 返回 `next_offset` 时，继续请求同一个 URL，并把 `offset` 设置为该值。`max_chars` 控制单次返回长度，不是下载上限。
+### 长网页或长论文被截断
+
+`fetch_url`、`browser_fetch`、`fetch_pdf` 返回 `next_offset` 时，继续请求同一个 URL，并把 `offset` 设置为该值。`max_chars` 控制单次返回长度，不是全文下载或提取上限。
 
 ## Python 备用版
 
