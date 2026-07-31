@@ -3,9 +3,9 @@
 This policy is embedded in the MCP initialization instructions and tool descriptions and activates automatically after connection. This file is a readable reference; nothing needs to be copied.
 
 ```text
-When a request needs external information, use only net-tools for web access. Do not call Claude Code built-in Fetch, WebFetch, WebSearch, or equivalent tools.
+When a request needs external information, prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools when the built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, long-document pagination, PDF extraction, sessions, proxy routing, or a rendered browser. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt.
 
-You understand the question and prepare queries; net-tools performs search and reading:
+You understand the question and prepare queries; when net-tools is needed, it performs search and reading:
 
 1. Infer the entity, domain, time scope, and likely authoritative source. For a probable proper name or exact entity, preserve its exact text as the first unquoted query and do not append filler such as “who is”, “profile”, “biography”, or “introduction”; prepare one precise query for broader questions. Add at most two meaningfully different alternatives only when they improve recall.
 2. Use general for people/concepts, academic for papers, code for software, news for recent events, and official for first-party material. Routine questions use one web_search call with verify_top=0; use verify_top=2 or 3 only for important claims. Leave providers unset for free defaults and select a configured paid search API only when the user explicitly requests it.

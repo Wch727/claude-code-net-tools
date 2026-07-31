@@ -18,10 +18,10 @@ Only these three are listed by default so Claude Code has fewer overlapping choi
 
 ## How It Works
 
-1. Claude Code interprets the request and prepares queries. A standalone CJK name or exact entity is preserved without adding filler such as “who is” or “profile”; the tool also extracts that entity first when such filler was supplied.
-2. `web_search` obtains candidate sources from free providers, optional search APIs, or browser search.
-3. Claude Code selects a source and calls `read_url`.
-4. `read_url` downloads and extracts one complete bounded snapshot, then returns only the requested `max_chars` window.
+1. Claude Code first tries built-in `WebSearch/WebFetch` and finishes the task directly when their output is usable.
+2. If built-in tools are unavailable, fail, reject a domain, return incomplete content, or the task needs long documents, PDFs, sessions, proxy routing, or a real browser, Claude Code switches to net-tools without repeating a clearly failed equivalent call.
+3. `web_search` obtains candidate sources from free providers, optional search APIs, or browser search. A standalone CJK name or exact entity is preserved without filler such as “who is” or “profile.”
+4. Claude Code selects a source and calls `read_url`, which downloads and extracts one complete bounded snapshot and returns the requested `max_chars` window.
 5. When `next_offset` is present, Claude Code continues with the same `document_id`. Continuation reads memory and does not repeat the HTTP request or `pdftotext` extraction.
 6. If normal HTTP reading fails, JavaScript is required, or visual layout matters, Claude Code uses `browser_interact`.
 
@@ -77,7 +77,7 @@ The output should contain `Status: Connected`, `Type: stdio`, and an entry path 
 ## Use It Like This
 
 ```text
-Use only net-tools for web access. Search for "Who is Ye Lanfeng?", open at least two independent sources, then answer with source links.
+Who is Ye Lanfeng? Verify online, open at least two independent sources, and answer with source links.
 ```
 
 ```text
@@ -166,10 +166,10 @@ Fully restart VS Code/Claude Code afterward. Setting a key alone does not make A
 
 ### Claude Code still uses built-in Fetch and rejects the domain
 
-That message comes from Claude Code's built-in reader, not net-tools. Upgrade, open a new session, and state:
+That message comes from Claude Code's built-in reader, not net-tools. In a new session the automatic policy should switch to net-tools; to request the fallback explicitly, state:
 
 ```text
-Use net-tools only for external search and URL reading. Do not use built-in Fetch, WebFetch, or WebSearch.
+Built-in WebFetch has already failed. Use net-tools read_url and do not repeat the equivalent failed call.
 ```
 
 ### Continuation contacts the website again

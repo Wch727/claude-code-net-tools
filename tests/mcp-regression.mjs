@@ -148,7 +148,8 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
   const client = new McpClient(label, command, args, cleanEnv(baseUrl, label));
   try {
     const initialization = await client.initialize();
-    assertIncludes(initialization.instructions, "Use only net-tools for external web access", `${label} automatic MCP instructions`);
+    assertIncludes(initialization.instructions, "Prefer Claude Code's built-in WebSearch and WebFetch", `${label} native-first MCP instructions`);
+    assertIncludes(initialization.instructions, "After a clear built-in failure, switch to net-tools", `${label} fallback MCP instructions`);
     assertIncludes(initialization.instructions, "preserve the exact entity text as the primary unquoted query", `${label} exact entity instructions`);
     assertIncludes(initialization.instructions, "make one web_search call with verify_top=0", `${label} cost-aware search instructions`);
     assertIncludes(initialization.instructions, "continue using the same document_id and that offset", `${label} MCP snapshot pagination instructions`);
@@ -159,7 +160,7 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assert.deepEqual(names, ["browser_interact", "read_url", "web_search"], `${label} compact tool profile`);
     const map = toolMap(tools);
     assert.deepEqual(map.get("web_search")?.inputSchema?.required, ["query"], `${label} web_search required fields`);
-    assertIncludes(map.get("web_search")?.description, "rather than relying on snippets or Claude Code Fetch/WebFetch", `${label} automatic search-to-read guidance`);
+    assertIncludes(map.get("web_search")?.description, "when built-in WebFetch fails", `${label} fallback search-to-read guidance`);
     assertIncludes(map.get("web_search")?.description, "Routine tasks should use one call", `${label} automatic web_search guidance`);
     assertIncludes(map.get("web_search")?.description, "Exact CJK entity matches are filtered deterministically", `${label} exact CJK entity guidance`);
     assertIncludes(map.get("read_url")?.description, "offset=next_offset", `${label} automatic read_url continuation guidance`);

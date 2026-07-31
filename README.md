@@ -18,10 +18,10 @@
 
 ## 工作原理
 
-1. Claude Code 判断问题意图并准备查询。单独的中文人名或专名保留原文，不添加“是谁”“人物介绍”等套话；即使传入了这些套话，工具也会先抽出专名本身进行搜索。
-2. `web_search` 从免费搜索源、可选搜索 API 或浏览器搜索中获取候选来源。
-3. Claude Code 选择来源并调用 `read_url`。
-4. `read_url` 一次下载并提取完整文档快照，单次只返回 `max_chars` 指定的片段。
+1. Claude Code 优先尝试内置 `WebSearch/WebFetch`；结果可用时直接完成任务。
+2. 内置工具不可用、报错、拒绝域名、内容不完整，或任务需要长文档、PDF、会话、代理和真实浏览器时，自动改用 net-tools，不重复已经明确失败的等价调用。
+3. `web_search` 从免费搜索源、可选搜索 API 或浏览器搜索中获取候选来源。单独的中文人名或专名保留原文，不添加“是谁”“人物介绍”等套话。
+4. Claude Code 选择来源并调用 `read_url`；它一次下载并提取完整文档快照，单次只返回 `max_chars` 指定的片段。
 5. 如果结果有 `next_offset`，Claude Code 用同一个 `document_id` 继续读取；续读只访问内存快照，不重复联网或重复运行 `pdftotext`。
 6. 普通 HTTP 读取失败、页面依赖 JavaScript 或需要观察布局时，再调用 `browser_interact`。
 
@@ -77,7 +77,7 @@ claude mcp get net-tools
 ## 直接这样用
 
 ```text
-请只使用 net-tools 联网。搜索“叶兰峰是谁”，打开至少两个独立来源后再回答，并附来源链接。
+叶兰峰是谁？请联网查证，打开至少两个独立来源后再回答，并附来源链接。
 ```
 
 ```text
@@ -166,10 +166,10 @@ Windows 配置 Tavily 示例：
 
 ### Claude Code 仍调用内置 Fetch，并提示域名不安全
 
-这是 Claude Code 内置工具的校验，不是 net-tools 返回的错误。升级后新建会话，并明确说：
+这是 Claude Code 内置工具的校验，不是 net-tools 返回的错误。新建会话后，自动策略应该改用 net-tools；需要临时明确指定时可以说：
 
 ```text
-外部搜索和 URL 读取只使用 net-tools；不要使用内置 Fetch、WebFetch 或 WebSearch。
+内置 WebFetch 已经失败，请改用 net-tools 的 read_url；不要重复刚才的等价调用。
 ```
 
 ### 读取第二段时又联网
