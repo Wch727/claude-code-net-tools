@@ -18,7 +18,7 @@ Python fallback:
 
 Optional:
 
-- Poppler `pdftotext`: used by `fetch_pdf`. Put it on PATH or set `CLAUDE_NET_PDFTOTEXT`.
+- Poppler `pdftotext`: used by `read_url` for PDFs and by legacy `fetch_pdf`. Put it on PATH or set `CLAUDE_NET_PDFTOTEXT`.
 - Search API keys: pass only through environment variables such as `KIMI_API_KEY`, `MINIMAX_API_KEY`, `BRAVE_SEARCH_API_KEY`, `SERPER_API_KEY`, and `TAVILY_API_KEY`.
 
 ## Install Script
@@ -75,21 +75,26 @@ Do not register the same `net-tools` name in multiple scopes. If `claude mcp lis
 | `CLAUDE_NET_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` | Proxy fallback when `CLAUDE_NET_PROXY` is not set. |
 | `CLAUDE_NET_PROXY_PORTS` | Local ports to auto-detect when no proxy is pinned, for example `7890,7897,1080`. |
 | `CLAUDE_NET_SEARCH_PROVIDERS` | Override web-search provider order, for example `bing_rss,duckduckgo,bing_html`. |
-| `CLAUDE_NET_SEARCH_BUDGET` | Default total `search_web` time budget in seconds. Default `30`; override per call with `time_budget`. |
+| `CLAUDE_NET_SEARCH_BUDGET` | Default total `web_search`/`search_web` time budget in seconds. Default `30`; override per call with `time_budget`. |
 | `CLAUDE_NET_SCHOLAR_PROVIDERS` | Override scholar-search provider order, for example `crossref,semantic_scholar,arxiv`. |
 | `CLAUDE_NET_DISABLED_PROVIDERS` | Disable providers, for example `duckduckgo,bing_html,arxiv`. |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | Consecutive provider failures before automatic skip. Default `3`. |
 | `CLAUDE_NET_ARXIV_COOLDOWN_MS` | Cooldown after arXiv returns HTTP 429. Default `5000` ms. |
-| `CLAUDE_NET_DEFAULT_MAX_CHARS` | Default `fetch_url` character output. Default `12000`. |
+| `CLAUDE_NET_DEFAULT_MAX_CHARS` | Default `read_url`/`fetch_url` character output. Default `12000`. |
 | `CLAUDE_NET_MAX_OUTPUT_CHARS` | Maximum characters returned by one tool call. Default `200000`. |
-| `CLAUDE_NET_MAX_FETCH_BYTES` | Maximum bytes downloaded by one fetch call. |
+| `CLAUDE_NET_MAX_FETCH_BYTES` | Maximum bytes downloaded by legacy `fetch_url` when no per-call value is provided. |
+| `CLAUDE_NET_TOOL_PROFILE` | `compact` (default) lists only `web_search`, `read_url`, and `browser_interact`; `full` lists every compatibility tool. Restart Claude Code after changing it. |
+| `CLAUDE_NET_SNAPSHOT_MAX_BYTES` | Default first-download limit for `read_url`. Default `20000000`; bounded to 1.2-50 MB. |
+| `CLAUDE_NET_DOCUMENT_CACHE_TTL_MS` | In-process document snapshot lifetime. Default `3600000` (one hour). |
+| `CLAUDE_NET_DOCUMENT_CACHE_MAX_DOCS` | Maximum in-process snapshots. Default `12`. |
+| `CLAUDE_NET_DOCUMENT_CACHE_MAX_TOTAL_CHARS` | Maximum total extracted characters retained in snapshots. Default `80000000`. |
 | `CLAUDE_NET_COOKIE_DIR` | Cookie jar directory. |
 | `CLAUDE_NET_SESSION_DIR` | Named session JSON directory. |
 | `CLAUDE_NET_CURL` | Custom curl path for the Node/curl build. |
 | `CLAUDE_NET_PDFTOTEXT` | Custom `pdftotext` path. |
 | `CLAUDE_NET_DEBUG` | Print more detailed error messages. |
 
-Advanced/testing: `CLAUDE_NET_ARXIV_API_URL` overrides the arXiv API endpoint. `CLAUDE_NET_ARXIV_HTML_BASE` overrides the arXiv HTML fallback used by `fetch_pdf`; its default is `https://ar5iv.labs.arxiv.org/html/`. Normal users should leave both unset.
+Advanced/testing: `CLAUDE_NET_ARXIV_API_URL` overrides the arXiv API endpoint. `CLAUDE_NET_ARXIV_HTML_BASE` overrides the arXiv HTML fallback used by `read_url` for PDFs and by legacy `fetch_pdf`; its default is `https://ar5iv.labs.arxiv.org/html/`. Normal users should leave both unset.
 
 ## Playwright Browser Configuration
 
@@ -113,14 +118,14 @@ Omit `-BrowserHeaded` to keep the browser hidden, though a fresh headless browse
 | Variable | Purpose |
 | --- | --- |
 | `CLAUDE_NET_BROWSER_FALLBACK` | Default browser policy: `never`, `auto`, or `always`. Default `auto`. |
-| `CLAUDE_NET_BROWSER_ENGINE` | First engine tried when `browser_search engine=auto`. Default `google`. |
+| `CLAUDE_NET_BROWSER_ENGINE` | First engine tried when `browser_interact action=search engine=auto`. Default `google`. |
 | `CLAUDE_NET_BROWSER` | Optional channel: `chrome`, `msedge`, `firefox`, or `webkit`. |
 | `CLAUDE_NET_BROWSER_PROFILE` | Optional dedicated persistent profile for browser cookies/login state. Do not point it at an everyday profile that is currently open. |
 | `CLAUDE_NET_BROWSER_HEADED` | Set to `1`/`true` to show the browser window. |
 | `CLAUDE_NET_BROWSER_TIMEOUT` | Browser command timeout in seconds. Default `35`. |
 | `CLAUDE_NET_BROWSER_CACHE_TTL_MS` | Browser-search cache duration. Default `300000` ms. |
 | `CLAUDE_NET_BROWSER_WORK_DIR` | Playwright snapshot/session workspace. Defaults to the system temp directory instead of the Claude Code project. |
-| `CLAUDE_NET_MAX_SCREENSHOT_BYTES` | Maximum image payload returned by `browser_screenshot`. Default `5000000`; oversized captures first fall back to a compressed viewport JPEG. |
+| `CLAUDE_NET_MAX_SCREENSHOT_BYTES` | Maximum image payload returned by `browser_interact action=screenshot` and legacy `browser_screenshot`. Default `5000000`; oversized captures first fall back to a compressed viewport JPEG. |
 | `CLAUDE_NET_PLAYWRIGHT_COMMAND` | Advanced: custom `playwright-cli` executable. |
 
 ## API Keys
@@ -141,7 +146,7 @@ Setting a key alone does not force paid API usage. Defaults still prefer free pr
 
 Web search and scholar search use separate provider order settings:
 
-- `CLAUDE_NET_SEARCH_PROVIDERS` controls `search_web` and `search_web_focused`.
+- `CLAUDE_NET_SEARCH_PROVIDERS` controls `web_search` and the legacy `search_web`/`search_web_focused` tools.
 - `CLAUDE_NET_SCHOLAR_PROVIDERS` controls `scholar_search`.
 - `CLAUDE_NET_DISABLED_PROVIDERS` applies to both groups.
 

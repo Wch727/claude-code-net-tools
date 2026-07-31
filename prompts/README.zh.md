@@ -31,4 +31,4 @@
 - 把 `net-tools` 换成你的 MCP 服务名。
 - 增加你常用的权威来源，例如官方文档、arXiv、PyPI、npm、GitHub、政府网站或公司文档。
 - 设置语言偏好，例如“用中文回答，但英文资料更权威时优先搜索英文来源”。
-- 设置成本规则，例如“先试免费 provider；只有 `search_status` 显示免费 provider 不可用时才用付费 API provider”。
+- 设置成本规则，例如“默认只用免费 provider；只有我明确同意时才使用已配置的付费 API provider”。

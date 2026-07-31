@@ -2,273 +2,203 @@
 
 [中文](README.md)
 
-Claude Code Net Tools is a local MCP server that adds web search, URL fetching, rendered-page reading, screenshots, and JSON/RSS/PDF extraction to Claude Code.
+A local web-access MCP for Claude Code. It addresses a specific problem: Claude Code's built-in search may be unavailable, built-in `Fetch/WebFetch` may reject a domain, free search endpoints may be unreliable, or the task may require long documents, PDFs, or JavaScript-rendered pages.
 
-It does not contain an LLM and does not answer questions by itself. The actual flow is:
+This project does not contain an LLM and does not answer questions by itself. Claude Code understands the request, prepares queries, and synthesizes the answer; this MCP performs network requests and returns sources and document content.
 
-1. Claude Code understands the request and chooses a `net-tools` tool.
-2. This server performs the request through the local network, a proxy, or a configured search API.
-3. The tool returns search results or page content to Claude Code.
-4. Claude Code reads the sources and writes the answer.
+## Three Default Tools
 
-This is intended for cases where Claude Code can chat normally but its built-in web features are unavailable or unreliable for the current account, model, or network. It does not replace or modify Claude Code's built-in `WebSearch`/`Fetch`; explicitly ask for `net-tools` when needed.
+| Tool | Purpose |
+| --- | --- |
+| `web_search` | Search the web, papers, code, news, or official sources. Accepts one primary query and up to two alternatives. |
+| `read_url` | Read HTML, text, JSON, RSS/Atom, and PDF. The first call creates a document snapshot; later calls continue with `document_id + offset` without downloading again. |
+| `browser_interact` | Use Playwright for real search pages, JavaScript pages, screenshots, clicks, typing, scrolling, downloads, and network responses. |
 
-## What It Can and Cannot Do
+Only these three are listed by default so Claude Code has fewer overlapping choices. Legacy interfaces such as `search_web`, `fetch_url`, `fetch_pdf`, and `browser_fetch` remain available. Set `CLAUDE_NET_TOOL_PROFILE=full` and restart Claude Code to list all compatibility tools.
 
-It can:
+## How It Works
 
-- Search free public endpoints or search APIs configured by the user.
-- Use a local proxy/VPN; when none is specified, probe common local proxy ports and then try a direct connection.
-- Fetch webpages, JSON, RSS/Atom, and PDFs.
-- Use Playwright to render JavaScript, click, type, capture screenshots, and inspect XHR/fetch responses.
-- Keep named HTTP sessions with headers, cookies, referer, and a dedicated cookie jar.
+1. Claude Code rewrites the user's request into useful search queries.
+2. `web_search` obtains candidate sources from free providers, optional search APIs, or browser search.
+3. Claude Code selects a source and calls `read_url`.
+4. `read_url` downloads and extracts one complete bounded snapshot, then returns only the requested `max_chars` window.
+5. When `next_offset` is present, Claude Code continues with the same `document_id`. Continuation reads memory and does not repeat the HTTP request or `pdftotext` extraction.
+6. If normal HTTP reading fails, JavaScript is required, or visual layout matters, Claude Code uses `browser_interact`.
 
-It cannot:
-
-- Bypass logins, captchas, paywalls, or authorization.
-- Guarantee that public search engines will never rate-limit or challenge automation.
-- Preserve formulas, tables, and complex PDF layout like a PDF reader.
-- Decide whether a source is trustworthy; factual answers should still be checked against source pages.
-
-Follow applicable laws, target-site rules, and organizational security requirements.
+By default the process keeps up to 12 snapshots, 80 million total characters, for one hour. Snapshots exist only in the MCP process memory; restarting Claude Code or the MCP requires reading the URL again.
 
 ## Installation
 
-### 1. Prerequisites
+### 1. Requirements
 
-The recommended Node build requires:
+Recommended Node build:
 
-- Claude Code, with `claude --version` working in a terminal.
-- Node.js 20 or newer, with `node -v` working.
-- System `curl`, with `curl --version` working. Windows 10/11 normally includes `curl.exe`.
+- Claude Code: `claude --version`
+- Node.js 20 or newer: `node -v`
+- curl: `curl --version`; Windows 10/11 normally includes `curl.exe`
 
-No `npm install` is required by default. PDF text extraction and browser support have separate optional dependencies described below.
+Basic search and HTTP reading do not require `npm install`.
 
-### 2. Clone the Repository
+The Python fallback requires Python 3.10 or newer and uses only the standard library, so it does not require `pip install`. Python supports HTTP(S) proxies; use the Node/curl build for SOCKS proxies.
+
+Optional dependencies:
+
+- PDF text: install Poppler `pdftotext`, make `pdftotext -v` work, or set `CLAUDE_NET_PDFTOTEXT` to its executable path.
+- Browser features: Node.js/npm plus Playwright CLI, installed below.
+
+### 2. Clone and Register
 
 ```powershell
 git clone https://github.com/Wch727/claude-code-net-tools.git
 cd claude-code-net-tools
-```
-
-### 3. Register It with Claude Code
-
-On Windows, user scope is recommended so the tools are available in every project:
-
-```powershell
 .\scripts\install-claude-code.ps1 -Scope user
 ```
 
-On macOS/Linux:
+macOS/Linux:
 
 ```bash
+git clone https://github.com/Wch727/claude-code-net-tools.git
+cd claude-code-net-tools
 ./scripts/install-claude-code.sh --scope user
 ```
 
-Use `local` instead of `user` to limit the server to the current project. After moving the repository or changing install options, add `-Force` (`--force` on macOS/Linux) to register it again.
+Use `user` for every project or `local` for only the current project. Add `-Force` (`--force` on macOS/Linux) after moving the repository, changing settings, or upgrading.
 
-Use a fixed proxy:
+On Windows, the installer prefers a windowless launcher so MCP calls do not flash a console. Add `-ShowConsole` when diagnosing startup errors.
 
-```powershell
-.\scripts\install-claude-code.ps1 -Scope user -Force -Proxy http://127.0.0.1:7890
-```
-
-Force a direct connection without probing local proxy ports:
-
-```powershell
-.\scripts\install-claude-code.ps1 -Scope user -Force -Proxy direct
-```
-
-On Windows, when `pythonw.exe` is available, the installer uses it as a windowless launcher while still running the full Node build. This only prevents VS Code/Claude Code from flashing a console when it starts the MCP server. Add `-ShowConsole` when startup-window debugging is needed.
-
-### 4. Verify the Installation
-
-Run:
+### 3. Verify and Restart
 
 ```powershell
 claude mcp get net-tools
 ```
 
-The output should show:
+The output should contain `Status: Connected`, `Type: stdio`, and an entry path in this repository. Fully restart VS Code/Claude Code and open a new session; an existing session does not reload MCP tools or instructions.
 
-- A `Status` line containing `Connected`
-- `Type: stdio`
-- An entry file pointing to this repository's `claude_net_mcp.mjs`
-
-Open a new Claude Code session and enter:
+## Use It Like This
 
 ```text
-Use only net-tools. Call net_doctor with live=true and query "Claude Code MCP", then explain whether each check succeeded.
-```
-
-`net_doctor` checks configuration only unless `live=true` is supplied. After this succeeds, normal questions do not require hand-written tool arguments.
-
-## Everyday Usage
-
-Tell Claude Code to use `net-tools` and describe the task:
-
-```text
-Use net-tools to find out who Ye Lanfeng is. Open at least two independent sources before answering and include source links.
+Use only net-tools for web access. Search for "Who is Ye Lanfeng?", open at least two independent sources, then answer with source links.
 ```
 
 ```text
-Use net-tools to find the original BERT paper. Search first, open the paper or abstract page, and report its title, authors, year, and main contribution.
+Use net-tools to find the original BERT paper, read its abstract and conclusion, and report its title, authors, year, and main contribution.
 ```
 
 ```text
-Open this URL with net-tools. If the normal fetch has no body, use browser_fetch to read the JavaScript-rendered page.
+Use net-tools to read this long document. If next_offset is returned, continue with document_id until you have covered the relevant sections.
 ```
 
 ```text
-Search for BERT in a browser with net-tools and use browser_screenshot so you can inspect both the result list and any knowledge panel.
+Use net-tools to search for BERT in a real browser, capture the results page, and open the original paper to verify the answer.
 ```
 
-Claude Code prepares queries and tool arguments itself. Specify providers, timeouts, or browser modes only when debugging specific behavior.
+Longer Chinese and English Claude Code instructions are under [prompts](prompts/README.en.md). Repository prompt files are examples only; place one in a `CLAUDE.md`, custom instruction, or first session message that Claude Code actually loads.
 
-## Which Tool to Use
+## Long Pages and PDFs
 
-| Need | Tool | Behavior |
-| --- | --- | --- |
-| General web search | `search_web` | Main search entry point; merges several queries and providers. |
-| Noisy search results | `search_web_focused` | Can clean the query and filter weak matches; not recommended as the default. |
-| Papers | `scholar_search` | Searches Crossref, Semantic Scholar, and arXiv. |
-| npm/PyPI/GitHub projects | `package_search` | Searches package registries or GitHub repositories. |
-| A known webpage URL | `fetch_url` | Downloads the page and extracts readable text, with pagination and optional links. |
-| JSON or RSS | `fetch_json` / `fetch_rss` | Preserves structure and formats the response. |
-| PDF | `fetch_pdf` | Downloads and pages through PDF text; arXiv failures can fall back to HTML. |
-| Browser search page | `browser_search` | Opens Google/Bing/DuckDuckGo and extracts results in page order. |
-| JavaScript-rendered page | `browser_fetch` | Runs page JavaScript in Playwright before reading the body. |
-| Layout, charts, or images | `browser_screenshot` | Returns both page text and a screenshot. |
-| Click, type, load more, or capture an API call | `browser_action` | Performs consecutive actions in one named browser session. |
-| Diagnose a failure | `net_doctor` / `proxy_status` / `search_status` / `browser_status` / `pdf_status` | Checks the whole setup, route, providers, browser, or PDF extractor. |
+`read_url` permits a 20 MB document snapshot by default and returns 12,000 characters per call by default. These are separate limits:
 
-When both page text and links are needed, use `fetch_url include_links=true` instead of calling `extract_links` separately.
+- `max_bytes` limits the first download. Default 20 MB, maximum 50 MB.
+- `max_chars` limits text returned to Claude Code in one call. Default 12,000.
+- `next_offset` means more extracted content remains.
+- `document_id` identifies the existing snapshot; continuation does not contact the website again.
 
-## Search Result Order
+PDF text comes from `pdftotext`. It is useful for abstracts, body text, and references, but formulas, tables, multi-column layout, and images can still be disordered. Use a PDF viewer or `browser_interact action=screenshot` when derivations or visual layout matter.
 
-`search_web` does not call another model to score results and does not apply heuristic relevance reranking by default. The approximate process is:
+For arXiv URLs, failed/non-PDF downloads or failed automatic extraction can fall back to ar5iv HTML. Set `html_fallback=false` to disable this.
 
-1. Claude Code supplies one main query and up to two alternatives.
-2. The server searches providers in configured order.
-3. Duplicate URLs are removed.
-4. Results are merged round-robin across queries/providers so one source does not occupy every position.
+## Playwright Browser
 
-The first result is therefore not guaranteed to be the most authoritative or correct. For reliable answers, ask Claude Code to open several independent sources. `verify_top` checks reachability, final URL, title, and body length; it does not change result order.
-
-Without `CLAUDE_NET_SEARCH_PROVIDERS`, the default order is `bing_rss,duckduckgo,bing_html` for non-CJK queries and `bing_rss,bing_html,sogou,so360,duckduckgo` for CJK queries. Unavailable or repeatedly failing providers are skipped.
-
-`intent=academic` routes to paper providers. `intent=code` routes to GitHub/npm/PyPI. People, events, and general concepts normally use `general`.
-
-## Browser Support
-
-Browser support is optional. Before first use:
+Before first use:
 
 ```powershell
 npx --yes --package @playwright/cli playwright-cli --help
 npx --yes --package @playwright/cli playwright-cli install-browser
 ```
 
-Then check it from Claude Code:
+Claude Code can then use one browser interface:
 
-```text
-Use net-tools to call browser_status with live=true.
-```
+- `browser_interact action=search`: render Google, Bing, or DuckDuckGo and extract results.
+- `action=read`: read JavaScript-rendered content.
+- `action=screenshot`: return an image plus extractable page text.
+- `action=open|snapshot|click|type|wait|scroll|extract|download|network|close`: operate a complex page through a named session.
 
-The default browser is headless: no window is shown, but `browser_screenshot` can still return an image. A visible browser is used only when the server was installed with `-BrowserHeaded`, for example to complete a captcha manually and reuse an isolated profile:
+Browser mode does not bypass login, captcha, paywall, or authorization. For manual login/captcha with a dedicated profile:
 
 ```powershell
 .\scripts\install-claude-code.ps1 -Scope user -Force -Browser chrome -BrowserProfile "$HOME\.claude-net-tools\chrome-profile" -BrowserHeaded
 ```
 
-Do not point the profile at an everyday Chrome profile that is currently open. Public search engines may still block fresh headless browsers. Browser mode complements HTTP search/fetch when rendering is required; it is not a guaranteed higher-quality search API.
+Do not point the profile at an everyday Chrome profile that is currently open.
 
-`search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`. The default `auto` starts a browser only when normal search has too few results or independent sources, HTTP fetch fails, an anti-bot page is detected, or the response is a JavaScript shell. `never` disables fallback; `always` forces browser use.
+## Network and Proxies
 
-## Search APIs (Optional)
+The default route scans common local proxy ports and then tries direct access. Pin a proxy:
 
-Free providers work without an API key. Kimi/Moonshot, MiniMax, Brave, Serper, and Tavily are supported. Keys are read only from environment variables; the repository and installer do not contain, upload, or save them.
+```powershell
+.\scripts\install-claude-code.ps1 -Scope user -Force -Proxy http://127.0.0.1:7890
+```
 
-For example, configure Tavily in the Windows user environment:
+Force direct access and disable local-port probing:
+
+```powershell
+.\scripts\install-claude-code.ps1 -Scope user -Force -Proxy direct
+```
+
+The Node/curl build supports HTTP, HTTPS, and `socks5h://`; Python supports HTTP(S).
+
+## Search Providers and API Keys
+
+Free providers work without a key. Optional providers include Kimi/Moonshot, MiniMax, Brave, Serper, and Tavily. Keys are read only from environment variables; never put them in the repository, README, MCP arguments, or commit history.
+
+Windows Tavily example:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("TAVILY_API_KEY", "your-key", "User")
 .\scripts\install-claude-code.ps1 -Scope user -Force -Providers tavily,bing_rss,duckduckgo
 ```
 
-Fully restart VS Code/Claude Code so the new process reads the environment variable. Remove the key with:
-
-```powershell
-[Environment]::SetEnvironmentVariable("TAVILY_API_KEY", $null, "User")
-```
-
-For this tool, merely setting a key does not call the API. Calls and charges are possible only when the provider is included in the configured order or explicitly selected in a tool call. See [Configuration and API keys](docs/config.en.md) for other variable names and base URLs.
-
-## PDF Support
-
-`fetch_pdf` can download a PDF without extra dependencies. Plain-text extraction requires Poppler `pdftotext` on PATH, or an explicit `CLAUDE_NET_PDFTOTEXT` path.
-
-Long papers are returned in chunks. When the result includes `next_offset`, call `fetch_pdf` again with the same PDF URL and set `offset` to that value. `max_chars` limits only the current response; it no longer limits how much text `pdftotext` may extract.
-
-For an arXiv URL, the tool defaults to the readable ar5iv HTML paper when the PDF is rate-limited, is not actually a PDF, or automatic extraction fails. Set `html_fallback=false` to disable this behavior. Plain text and HTML are useful for abstracts, introductions, conclusions, and references; use a PDF reader for formulas, tables, derivations, or layout-sensitive material.
+Fully restart VS Code/Claude Code afterward. Setting a key alone does not make API calls; the corresponding provider must be in the configured order or explicitly requested. See [Configuration and API Keys](docs/config.en.md) for every variable.
 
 ## Troubleshooting
 
-### Status Is Not `Connected`
+### Claude Code still uses built-in Fetch and rejects the domain
 
-```powershell
-claude mcp get net-tools
-.\scripts\install-claude-code.ps1 -Scope user -Force
+That message comes from Claude Code's built-in reader, not net-tools. Upgrade, open a new session, and state:
+
+```text
+Use net-tools only for external search and URL reading. Do not use built-in Fetch, WebFetch, or WebSearch.
 ```
 
-Open a new Claude Code session. If `Conflicting scopes` appears, use `claude mcp list` to locate duplicate entries and keep only one scope.
+### Continuation contacts the website again
 
-### A Black Console Flashes on Every Call
+Call `read_url` with the exact `document_id` and `next_offset` from the previous result. Do not pass only the URL. A snapshot expires after its TTL or an MCP restart by design.
 
-On Windows, run `claude mcp get net-tools`. If `Command` is `pythonw.exe`, the windowless launcher is enabled. An old session may still keep the old process, so fully restart VS Code. Without `pythonw.exe`, the tools still work, but some GUI hosts may expose the Node console.
+### Legacy tool names are needed
 
-### A White Browser Window Appears
-
-The server was usually installed with `-BrowserHeaded`. To return to background browser mode:
+On Windows:
 
 ```powershell
-.\scripts\install-claude-code.ps1 -Scope user -Force
+[Environment]::SetEnvironmentVariable("CLAUDE_NET_TOOL_PROFILE", "full", "User")
 ```
 
-### Search Returns Nothing or Is Slow
+Restart Claude Code. Change the value to `compact` or remove it to restore the three-tool list.
 
-Ask Claude Code to call `proxy_status`, then `search_status live=true`. If a free provider is rate-limited, change provider order temporarily or configure a search API. When arXiv returns HTTP 429, the server cools down and continues with Crossref/Semantic Scholar.
+### Search is empty or slow
 
-### Claude Code's Built-in `Fetch` Says a Domain Is Unsafe
-
-That check belongs to Claude Code's built-in fetcher, not this project. Since 0.11.0, the MCP initialization response tells Claude Code to stay with `net-tools`, use `browser_fetch` after a normal page fails, and not switch back to built-in `Fetch/WebFetch`. Open a new Claude Code session after upgrading; an existing session does not reload the server instructions.
-
-If a new session still selects built-in `Fetch`, state: "Use only `net-tools fetch_url` for external pages, use `net-tools browser_fetch` for dynamic or blocked pages, and do not use built-in Fetch/WebFetch."
-
-### A Long Page or Paper Is Truncated
-
-When `fetch_url`, `browser_fetch`, or `fetch_pdf` returns `next_offset`, request the same URL again with `offset` set to that value. `max_chars` controls one response chunk, not the full download or extraction limit.
-
-## Python Fallback
-
-The Python 3.10+ fallback uses only the standard library and does not need `pip install`:
-
-```powershell
-.\scripts\install-claude-code.ps1 -Scope user -Runtime python -Force
-```
-
-The Python build supports HTTP(S) proxies only. The Node/curl build is recommended for SOCKS proxies and the main Windows setup. Browser support in the Python build still requires Node.js/npm.
+Have Claude Code rewrite the query with full names, English names, organizations, years, paper titles, or official-site terms. Free engines may rate-limit or require a captcha; use `browser_interact action=search`, change providers, or configure a search API.
 
 ## Documentation
 
 - [Configuration, environment variables, and API keys](docs/config.en.md)
-- [All tool parameters and limits](docs/tools.en.md)
-- [Testing, smoke prompts, and development checks](docs/testing.en.md)
-- [Claude Code search prompts](prompts/README.en.md)
+- [Three main tools, compatibility tools, and limits](docs/tools.en.md)
+- [Tests and smoke-test prompts](docs/testing.en.md)
+- [Claude Code search prompt](prompts/README.en.md)
 
-## Development Verification
+Development verification:
 
 ```powershell
 npm test
 ```
 
-This command uses local fixtures to test both MCP implementations without contacting real search engines. With a Playwright browser installed, `npm run test:browser-live` performs a real browser-process test and is intended for development only.
+The test suite starts both Node and Python MCP implementations and verifies tool profiles, structured results, long-page snapshots, PDF continuation, browser mocks, sessions, and search providers without contacting real search engines.

@@ -18,7 +18,7 @@ Python 备用版：
 
 可选：
 
-- Poppler `pdftotext`：用于 `fetch_pdf` 提取 PDF 文本。安装后放进 PATH，或设置 `CLAUDE_NET_PDFTOTEXT`。
+- Poppler `pdftotext`：用于 `read_url` 读取 PDF，也用于旧版 `fetch_pdf`。安装后放进 PATH，或设置 `CLAUDE_NET_PDFTOTEXT`。
 - 搜索 API key：只通过环境变量传入，例如 `KIMI_API_KEY`、`MINIMAX_API_KEY`、`BRAVE_SEARCH_API_KEY`、`SERPER_API_KEY`、`TAVILY_API_KEY`。
 
 ## 安装脚本
@@ -75,14 +75,19 @@ macOS/Linux：
 | `CLAUDE_NET_HTTP_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` | 未设置 `CLAUDE_NET_PROXY` 时的代理回退。 |
 | `CLAUDE_NET_PROXY_PORTS` | 未指定代理时自动探测的本地端口列表，例如 `7890,7897,1080`。 |
 | `CLAUDE_NET_SEARCH_PROVIDERS` | 覆盖网页搜索 provider 顺序，例如 `bing_rss,duckduckgo,bing_html`。 |
-| `CLAUDE_NET_SEARCH_BUDGET` | `search_web` 默认总时间预算秒数，默认 `30`，单次调用可用 `time_budget` 覆盖。 |
+| `CLAUDE_NET_SEARCH_BUDGET` | `web_search`/`search_web` 默认总时间预算秒数，默认 `30`，单次调用可用 `time_budget` 覆盖。 |
 | `CLAUDE_NET_SCHOLAR_PROVIDERS` | 覆盖学术搜索 provider 顺序，例如 `crossref,semantic_scholar,arxiv`。 |
 | `CLAUDE_NET_DISABLED_PROVIDERS` | 禁用指定 provider，例如 `duckduckgo,bing_html,arxiv`。 |
 | `CLAUDE_NET_PROVIDER_FAIL_LIMIT` | provider 连续失败多少次后自动跳过，默认 `3`。 |
 | `CLAUDE_NET_ARXIV_COOLDOWN_MS` | arXiv 返回 429 后的冷却时间，默认 `5000` 毫秒。 |
-| `CLAUDE_NET_DEFAULT_MAX_CHARS` | `fetch_url` 默认返回字符数，默认 `12000`。 |
+| `CLAUDE_NET_DEFAULT_MAX_CHARS` | `read_url`/`fetch_url` 默认返回字符数，默认 `12000`。 |
 | `CLAUDE_NET_MAX_OUTPUT_CHARS` | 单次工具输出的最大字符数，默认 `200000`。 |
-| `CLAUDE_NET_MAX_FETCH_BYTES` | 单次下载最大字节数。 |
+| `CLAUDE_NET_MAX_FETCH_BYTES` | 旧版 `fetch_url` 未传单次上限时的默认下载字节数。 |
+| `CLAUDE_NET_TOOL_PROFILE` | `compact`（默认）只显示 `web_search`、`read_url`、`browser_interact`；`full` 显示全部兼容工具。修改后需重启 Claude Code。 |
+| `CLAUDE_NET_SNAPSHOT_MAX_BYTES` | `read_url` 首次下载的默认上限。默认 `20000000`，范围 1.2-50 MB。 |
+| `CLAUDE_NET_DOCUMENT_CACHE_TTL_MS` | 进程内文档快照有效期。默认 `3600000`（1 小时）。 |
+| `CLAUDE_NET_DOCUMENT_CACHE_MAX_DOCS` | 进程内最多保留的文档快照数。默认 `12`。 |
+| `CLAUDE_NET_DOCUMENT_CACHE_MAX_TOTAL_CHARS` | 所有快照最多保留的提取字符总数。默认 `80000000`。 |
 | `CLAUDE_NET_COOKIE_DIR` | cookie jar 存储目录。 |
 | `CLAUDE_NET_SESSION_DIR` | named session JSON 存储目录。 |
 | `CLAUDE_NET_CURL` | Node/curl 版自定义 curl 路径。 |
@@ -113,14 +118,14 @@ Python 版也通过同一个 Playwright CLI 启动浏览器，因此启用浏览
 | 变量 | 作用 |
 | --- | --- |
 | `CLAUDE_NET_BROWSER_FALLBACK` | 默认浏览器策略：`never`、`auto` 或 `always`，默认 `auto`。 |
-| `CLAUDE_NET_BROWSER_ENGINE` | `browser_search engine=auto` 时优先尝试的引擎，默认 `google`。 |
+| `CLAUDE_NET_BROWSER_ENGINE` | `browser_interact action=search engine=auto` 时优先尝试的引擎，默认 `google`。 |
 | `CLAUDE_NET_BROWSER` | 可选浏览器通道：`chrome`、`msedge`、`firefox` 或 `webkit`。 |
 | `CLAUDE_NET_BROWSER_PROFILE` | 可选的专用持久化 profile 目录，用于保留浏览器 cookie/登录状态。不要指向正在运行的日常浏览器 profile。 |
 | `CLAUDE_NET_BROWSER_HEADED` | 设为 `1`/`true` 时显示浏览器窗口。 |
 | `CLAUDE_NET_BROWSER_TIMEOUT` | 浏览器命令超时秒数，默认 `35`。 |
 | `CLAUDE_NET_BROWSER_CACHE_TTL_MS` | 浏览器搜索缓存时间，默认 `300000` 毫秒。 |
 | `CLAUDE_NET_BROWSER_WORK_DIR` | Playwright 快照/会话临时目录；默认使用系统临时目录，不污染 Claude Code 项目。 |
-| `CLAUDE_NET_MAX_SCREENSHOT_BYTES` | `browser_screenshot` 返回图片的最大字节数，默认 `5000000`；超限时会优先退回压缩后的当前视口 JPEG。 |
+| `CLAUDE_NET_MAX_SCREENSHOT_BYTES` | `browser_interact action=screenshot` 和旧版 `browser_screenshot` 返回图片的最大字节数，默认 `5000000`；超限时会优先退回压缩后的当前视口 JPEG。 |
 | `CLAUDE_NET_PLAYWRIGHT_COMMAND` | 高级配置：自定义 `playwright-cli` 可执行命令。 |
 
 ## API key
@@ -141,7 +146,7 @@ API key 只从环境变量读取，不要写进代码、README、提交记录或
 
 网页搜索和学术搜索是两套顺序：
 
-- `CLAUDE_NET_SEARCH_PROVIDERS` 控制 `search_web` 和 `search_web_focused`。
+- `CLAUDE_NET_SEARCH_PROVIDERS` 控制 `web_search` 和旧版 `search_web`/`search_web_focused`。
 - `CLAUDE_NET_SCHOLAR_PROVIDERS` 控制 `scholar_search`。
 - `CLAUDE_NET_DISABLED_PROVIDERS` 对两类 provider 都生效。
 

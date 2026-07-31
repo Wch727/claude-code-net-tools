@@ -31,4 +31,4 @@ Note: files under `prompts/` do not become active automatically. They are source
 - Change `net-tools` to your MCP server name.
 - Add preferred authoritative sources, such as official docs, arXiv, PyPI, npm, GitHub, government sites, or company docs.
 - Add language preferences, for example: "answer in Chinese, but search English sources first when they are more authoritative".
-- Add cost rules, for example: "try free providers first; use paid API providers only after `search_status` shows free providers are failing".
+- Add cost rules, for example: "use only free providers unless I explicitly approve a configured paid API provider".

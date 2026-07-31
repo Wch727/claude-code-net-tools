@@ -1,64 +1,94 @@
-# Testing, Smoke Prompts, And Development Checks
+# Tests and Smoke Checks
 
-[中文](testing.zh.md) · [Back to README](../README.en.md)
+[中文](testing.zh.md) | [Back to README](../README.en.md)
 
-## Claude Code Smoke Prompts
-
-After installation or config changes, ask these in Claude Code in order. They cover the main doctor check, route detection, search, fetching, paging, scholar search, and PDF handling.
-
-```text
-Use net-tools net_doctor live=true query="Claude Code MCP".
-Use net-tools proxy_status.
-Use net-tools search_status.
-Use net-tools search_web to search "叶兰峰是谁" count 5.
-Use net-tools search_web with primary query "BERT original paper", alternative queries ["BERT Bidirectional Encoder Representations from Transformers arXiv 1810.04805", "site:research.google BERT language model"], intent academic, count 6, time_budget 30, and verify_top 2; then summarize the verified sources.
-Use net-tools fetch_url to read https://example.com with extract readable include_links true link_limit 10.
-Use net-tools scholar_search to search "Attention Is All You Need Vaswani 2017 transformer" count 5.
-Use net-tools search_web to search "Attention Is All You Need arXiv PDF" count 5, choose the official arXiv PDF, then use net-tools fetch_pdf to read it.
-```
-
-A good run does not require every provider to succeed. It should show the active route, have at least one working search provider, return body text/status/`next_offset` where applicable from `fetch_url`, avoid repeated arXiv requests after HTTP 429, and provide clear diagnostics if local `pdftotext` is unavailable.
-
-## Browser Smoke Prompts
-
-```text
-Use net-tools browser_status with live=true.
-Use net-tools browser_search to search "Rosenblatt XOR problem Principles of Neurodynamics 1962" count 3, preserving browser order.
-Use net-tools browser_screenshot with query "BERT" engine auto, and describe the visible search modules before opening the original paper source.
-Use net-tools scholar_search to search "McDermott R1 rule-based configurer computer systems 1982" count 3 with provider semantic_scholar; if empty, report the relaxed query attempt.
-Use net-tools browser_fetch to read https://en.wikipedia.org/wiki/Frank_Rosenblatt with include_links true. Do not use Claude Code built-in Fetch.
-For an interactive page, use browser_action action=open with a named session, inspect its snapshot, then use role+name or label targets for type/click/extract; use action=network with url_pattern when the useful data comes from XHR/fetch, and close the session afterward.
-```
-
-The last prompt must show a `net-tools browser_fetch` or `net-tools fetch_url` call. If Claude Code switches to built-in `Fetch` and reports “Unable to verify if domain is safe to fetch,” that is a separate tool's domain verification, not a net-tools fetch failure.
-
-## Session Smoke Prompts
-
-```text
-Use net-tools session_create to create a session named demo with headers {"X-Test":"ok"}, cookies {"token":"example"}, and referer "https://example.com/".
-Use net-tools session_status for session demo.
-Use net-tools fetch_url to read https://example.com with session demo and extract readable.
-Use net-tools session_clear for session demo.
-```
-
-## Development Check
+## Installation Check
 
 ```powershell
-npm run check
+claude mcp get net-tools
+```
+
+Expect `Status: Connected`. After an upgrade, fully restart VS Code/Claude Code and open a new session.
+
+First ask in the new session:
+
+```text
+List the names of the currently available net-tools tools without calling them.
+```
+
+Compact mode should list only `web_search`, `read_url`, and `browser_interact`.
+
+## Recommended Smoke Prompts
+
+Use a separate new session for each prompt when you want to inspect tool selection clearly.
+
+### 1. Person Search With Multiple Sources
+
+```text
+Use only net-tools for web access. Who is Ye Lanfeng? Rewrite the search query, open at least two independent sources, and answer with links.
+```
+
+Expected: `web_search`, then at least one `read_url`; no built-in Fetch/WebFetch.
+
+### 2. Academic Search
+
+```text
+Use only net-tools. Which paper introduced BERT? Read the paper abstract page and report title, authors, year, arXiv ID, and three main contributions.
+```
+
+Expected: `web_search intent=academic`, then `read_url`. An empty result should trigger a query rewrite rather than an immediate “no source” conclusion.
+
+### 3. Long-Paper Snapshot Continuation
+
+```text
+Use only net-tools to find and read Attention Is All You Need. Read the abstract and then the conclusion. If next_offset is returned, continue with document_id rather than downloading the URL again. Report each offset used.
+```
+
+Expected: the first `read_url` returns `document_id`; continuation passes only `document_id + offset` and reports `Snapshot: cache`.
+
+### 4. URL Body and Links
+
+```text
+Use only net-tools to read https://example.com and return both body text and links.
+```
+
+Expected: `read_url include_links=true` with status, body, links, and structured fields.
+
+### 5. JavaScript Page
+
+```text
+Use only the net-tools browser to open a JavaScript page and read its rendered title and body. Do not switch to built-in Fetch if normal HTTP output is empty.
+```
+
+Expected: `browser_interact action=read`.
+
+### 6. Search Screenshot
+
+```text
+Use only net-tools to search for BERT in a real browser, capture the results page, and report the first three sources from the image and extracted results. Open original sources before making important claims.
+```
+
+Expected: `browser_interact action=screenshot` returns text and an image, followed by `read_url` for source verification.
+
+## Development Regression
+
+```powershell
 npm test
+```
+
+Local fixtures test both Node and Python for:
+
+- The three-tool compact profile and full compatibility profile.
+- Node/Python schema parity.
+- Structured content from `web_search`, `read_url`, and `browser_interact`.
+- Long HTML beyond the old 1.2 MB limit.
+- No extra server request for second-page HTML/PDF continuation.
+- PDF extraction, arXiv 429 cooldown, browser mocks, HTTP sessions, links, and anti-bot diagnostics.
+
+With a real Playwright browser installed:
+
+```powershell
 npm run test:browser-live
 ```
 
-`npm run check` checks Node syntax and compiles the Python build. `npm test` starts a local offline fixture and tests both builds through MCP JSON-RPC, covering:
-
-- Tool list and schema parity.
-- `net_doctor` configuration-only diagnostics without paid API calls.
-- `fetch_url` paging/link extraction plus protection against false blocked-page diagnostics when complete articles contain ordinary phrases such as “security check.”
-- `search_web` multi-query merging, total time budget, and `verify_top` source labels.
-- `browser_action` schema, named sessions, and interactive-element output.
-- `browser_screenshot` page text, MCP image payload, and image MIME type.
-- `session_create/session_status/session_clear` plus session headers/cookies/referer.
-- `search_status` provider diagnostics.
-- arXiv HTTP 429 cooldown without repeated requests.
-
-`npm test` does not download dependencies. `npm run test:browser-live` requires an installed Playwright browser and uses local JavaScript-rendered pages to test `browser_fetch`, `browser_screenshot` image output, automatic fallback, and `browser_action` typing, clicking, state reuse, scoped extraction, and XHR/JSON capture in both Node and Python builds.
+This command launches a real browser and is intended only for local development verification.

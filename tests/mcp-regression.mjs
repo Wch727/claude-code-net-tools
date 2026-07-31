@@ -113,6 +113,7 @@ function cleanEnv(baseUrl, runtime) {
   ]) env[key] = "";
   env.CLAUDE_NET_PROXY = "direct";
   env.CLAUDE_NET_BROWSER_FALLBACK = "never";
+  env.CLAUDE_NET_TOOL_PROFILE = "compact";
   env.CLAUDE_NET_PLAYWRIGHT_COMMAND = process.execPath;
   env.CLAUDE_NET_PLAYWRIGHT_ARGS = JSON.stringify([path.join(root, "tests", "playwright-cli-mock.mjs")]);
   env.CLAUDE_NET_ARXIV_API_URL = `${baseUrl}/arxiv`;
@@ -143,27 +144,21 @@ function findPython() {
   return null;
 }
 
-async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
+async function runRuntime(label, command, args, baseUrl, hitCounters) {
   const client = new McpClient(label, command, args, cleanEnv(baseUrl, label));
   try {
     const initialization = await client.initialize();
     assertIncludes(initialization.instructions, "Do not switch to Claude Code built-in Fetch/WebFetch", `${label} MCP instructions`);
-    assertIncludes(initialization.instructions, "continue the same URL with that offset", `${label} MCP pagination instructions`);
+    assertIncludes(initialization.instructions, "continue with its document_id and that offset", `${label} MCP snapshot pagination instructions`);
     const tools = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    for (const required of ["net_doctor", "proxy_status", "search_status", "session_create", "session_status", "session_clear", "browser_status", "browser_search", "browser_fetch", "browser_screenshot", "browser_action", "search_web", "scholar_search", "fetch_url", "extract_links", "fetch_json", "fetch_rss", "fetch_pdf"]) {
-      assert.ok(names.includes(required), `${label} missing tool ${required}`);
-    }
-    const fetchPdfTool = toolMap(tools).get("fetch_pdf");
-    assertIncludes(fetchPdfTool?.description, "use instead of built-in Fetch/WebFetch", `${label} fetch_pdf description`);
-    assert.ok(fetchPdfTool?.inputSchema?.properties?.offset, `${label} fetch_pdf must expose offset`);
-    assert.ok(fetchPdfTool?.inputSchema?.properties?.html_fallback, `${label} fetch_pdf must expose html_fallback`);
-    const searchWebRequired = toolMap(tools).get("search_web")?.inputSchema?.required || [];
-    assert.deepEqual(
-      [...searchWebRequired].sort(),
-      ["intent", "queries", "query", "time_budget", "verify_top"].sort(),
-      `${label} search_web must require the search-planning fields`,
-    );
+    assert.deepEqual(names, ["browser_interact", "read_url", "web_search"], `${label} compact tool profile`);
+    const map = toolMap(tools);
+    assert.deepEqual(map.get("web_search")?.inputSchema?.required, ["query"], `${label} web_search required fields`);
+    assert.ok(map.get("read_url")?.inputSchema?.properties?.document_id, `${label} read_url document_id`);
+    assert.equal(map.get("read_url")?.inputSchema?.anyOf, undefined, `${label} read_url must avoid Anthropic-rejected top-level anyOf`);
+    assert.ok(map.get("read_url")?.inputSchema?.properties?.max_bytes?.default >= 20000000, `${label} read_url snapshot byte limit`);
+    assert.ok(map.get("browser_interact")?.inputSchema?.properties?.action, `${label} browser_interact action`);
 
     const doctor = await client.callTool("net_doctor", { providers: ["duckduckgo", "kimi"], live: false });
     assertIncludes(doctor, "Claude Code net-tools doctor:", `${label} net_doctor`);
@@ -185,6 +180,9 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     const browserResults = await client.callTool("browser_search", { query: "Rosenblatt XOR Principles of Neurodynamics 1962", count: 3 });
     assertIncludes(browserResults, "Principles of Neurodynamics", label + " browser_search");
     assertIncludes(browserResults, "Provider: browser:google", label + " browser_search");
+    const compactBrowser = await client.callToolResult("browser_interact", { action: "search", query: "Rosenblatt XOR Principles of Neurodynamics 1962", count: 3 });
+    assert.equal(compactBrowser.structuredContent?.action, "search", label + " browser_interact structured action");
+    assert.ok(compactBrowser.structuredContent?.results?.length >= 1, label + " browser_interact structured results");
 
     const focusedBrowser = await client.callTool("search_web_focused", { query: "Rosenblatt XOR problem Principles of Neurodynamics 1962", count: 3, browser: "always" });
     assertIncludes(focusedBrowser, "Principles of Neurodynamics", label + " focused browser relevance");
@@ -205,7 +203,7 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     assertIncludes(action, "Interactive elements: 1", label + " browser_action elements");
     assertIncludes(action, "Load data", label + " browser_action element label");
 
-    const multiSearch = await client.callTool("search_web", {
+    const multiSearchResult = await client.callToolResult("web_search", {
       query: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
       queries: ["BERT original paper Devlin"],
       intent: "academic",
@@ -214,30 +212,57 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
       verify_top: 1,
       time_budget: 15,
     });
+    const multiSearch = multiSearchResult.content.map((item) => item.text || "").join("\n");
     assertIncludes(multiSearch, "BERT original paper Devlin", label + " multi-query search");
     assertIncludes(multiSearch, "\n1. BERT: Pre-training", label + " exact academic title priority");
     assertIncludes(multiSearch, "academic exact-title match", label + " exact academic title note");
     assertIncludes(multiSearch, "Verification: reachable; HTTP 200", label + " search verification");
     assertIncludes(multiSearch, "no heuristic relevance reranking", label + " search ordering");
+    assert.equal(multiSearchResult.structuredContent?.intent, "academic", label + " web_search structured intent");
+    assert.ok(multiSearchResult.structuredContent?.results?.length >= 1, label + " web_search structured results");
 
+    const beforeLegacyPage = hitCounters.page;
     const page = await client.callTool("fetch_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, include_links: true, link_limit: 5 });
     assertIncludes(page, "Status: 200", `${label} fetch_url`);
     assertIncludes(page, "Content range: characters 0-500", `${label} fetch_url`);
     assertIncludes(page, "next_offset: 500", `${label} fetch_url`);
     assertIncludes(page, "Links", `${label} fetch_url`);
     assertIncludes(page, "Alpha", `${label} fetch_url`);
-
     const continued = await client.callTool("fetch_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, offset: 500 });
     assertIncludes(continued, "Content range: characters 500-", `${label} fetch_url offset`);
+    assert.equal(hitCounters.page, beforeLegacyPage + 1, `${label} fetch_url continuation must use cache`);
+
+    const beforeSnapshotPage = hitCounters.page;
+    const firstRead = await client.callToolResult("read_url", { url: `${baseUrl}/page`, extract: "readable", max_chars: 500, refresh: true, include_links: true });
+    const documentId = firstRead.structuredContent?.document_id;
+    assert.ok(/^doc_[a-f0-9]{24}$/.test(documentId || ""), `${label} read_url document ID`);
+    assert.equal(firstRead.structuredContent?.next_offset, 500, `${label} read_url next offset`);
+    const secondRead = await client.callToolResult("read_url", { document_id: documentId, offset: 500, max_chars: 500 });
+    assert.equal(secondRead.structuredContent?.snapshot, "cache", `${label} read_url continuation snapshot`);
+    assert.equal(secondRead.structuredContent?.offset, 500, `${label} read_url continuation offset`);
+    assert.equal(hitCounters.page, beforeSnapshotPage + 1, `${label} read_url continuation must not refetch`);
+
+    const hugeRead = await client.callToolResult("read_url", { url: `${baseUrl}/huge-page`, extract: "readable", max_chars: 500, refresh: true });
+    assert.ok(hugeRead.structuredContent?.total_chars > 1200000, `${label} read_url must snapshot HTML beyond the old byte cap`);
 
     const pdfHealth = await client.callTool("pdf_status", {});
     if (pdfHealth.includes("Status: available")) {
+      const beforeLegacyPdf = hitCounters.pdf;
       const firstPdfPage = await client.callTool("fetch_pdf", { url: `${baseUrl}/paper.pdf`, max_chars: 500 });
       assertIncludes(firstPdfPage, "Content range: characters 0-500", `${label} fetch_pdf first page`);
       assertIncludes(firstPdfPage, "next_offset: 500", `${label} fetch_pdf next offset`);
       assertIncludes(firstPdfPage, "Long PDF fixture line", `${label} fetch_pdf extracted text`);
       const secondPdfPage = await client.callTool("fetch_pdf", { url: `${baseUrl}/paper.pdf`, max_chars: 500, offset: 500 });
       assertIncludes(secondPdfPage, "Content range: characters 500-1000", `${label} fetch_pdf continuation`);
+      assert.equal(hitCounters.pdf, beforeLegacyPdf + 1, `${label} fetch_pdf continuation must use cache`);
+
+      const beforeSnapshotPdf = hitCounters.pdf;
+      const firstPdfRead = await client.callToolResult("read_url", { url: `${baseUrl}/paper.pdf`, kind: "pdf", max_chars: 500, refresh: true });
+      const pdfDocumentId = firstPdfRead.structuredContent?.document_id;
+      assert.equal(firstPdfRead.structuredContent?.kind, "pdf", `${label} read_url PDF kind`);
+      const secondPdfRead = await client.callToolResult("read_url", { document_id: pdfDocumentId, offset: 500, max_chars: 500 });
+      assert.equal(secondPdfRead.structuredContent?.snapshot, "cache", `${label} read_url PDF continuation snapshot`);
+      assert.equal(hitCounters.pdf, beforeSnapshotPdf + 1, `${label} read_url PDF continuation must not refetch`);
     } else {
       console.warn(`Skipping ${label} PDF pagination smoke: pdftotext is unavailable.`);
     }
@@ -273,14 +298,14 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
     const cleared = await client.callTool("session_clear", { name: "smoke" });
     assertIncludes(cleared, "Cleared session: smoke", `${label} session_clear`);
 
-    const before = arxivHitCounter.count;
+    const before = hitCounters.arxiv;
     const arxivFirst = await client.callTool("scholar_search", { query: "BERT", providers: ["arxiv"], count: 1 });
     assertIncludes(arxivFirst, "HTTP 429", `${label} arxiv first`);
-    assert.equal(arxivHitCounter.count, before + 1, `${label} should call arXiv fixture once`);
+    assert.equal(hitCounters.arxiv, before + 1, `${label} should call arXiv fixture once`);
 
     const arxivSecond = await client.callTool("scholar_search", { query: "BERT", providers: ["arxiv"], count: 1 });
     assertIncludes(arxivSecond, "recently returned HTTP 429", `${label} arxiv cooldown`);
-    assert.equal(arxivHitCounter.count, before + 1, `${label} should not call arXiv fixture while cooling down`);
+    assert.equal(hitCounters.arxiv, before + 1, `${label} should not call arXiv fixture while cooling down`);
 
     const cooldownStatus = await client.callTool("search_status", { providers: ["arxiv"] });
     assertIncludes(cooldownStatus, "cooldown", `${label} cooldown status`);
@@ -291,6 +316,20 @@ async function runRuntime(label, command, args, baseUrl, arxivHitCounter) {
   }
 }
 
+async function assertFullProfile(label, command, args, baseUrl) {
+  const env = cleanEnv(baseUrl, label + "-full");
+  env.CLAUDE_NET_TOOL_PROFILE = "full";
+  const client = new McpClient(label + "-full", command, args, env);
+  try {
+    await client.initialize();
+    const names = (await client.listTools()).map((tool) => tool.name);
+    for (const required of ["web_search", "read_url", "browser_interact", "search_web", "search_web_focused", "fetch_url", "fetch_pdf", "browser_fetch", "browser_action", "session_create", "net_doctor"]) {
+      assert.ok(names.includes(required), `${label} full profile missing ${required}`);
+    }
+  } finally {
+    client.close();
+  }
+}
 function buildPdf(lines) {
   const escapePdfText = (value) => value.replace(/([\\()])/g, "\\$1");
   const content = [
@@ -323,15 +362,24 @@ function buildPdf(lines) {
 
 const longText = Array.from({ length: 90 }, (_, index) => `Long fixture paragraph ${index} keeps enough readable text for pagination.`).join(" ");
 const longPdf = buildPdf(Array.from({ length: 70 }, (_, index) => `Long PDF fixture line ${String(index).padStart(3, "0")}: pagination keeps reading beyond the first chunk.`));
-const arxivHitCounter = { count: 0 };
+const hugeText = "Large document snapshot content. ".repeat(50000);
+const hitCounters = { page: 0, pdf: 0, huge: 0, arxiv: 0 };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   if (url.pathname === "/page") {
+    hitCounters.page += 1;
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><html><head><title>Fixture</title></head><body><article><h1>Fixture Page</h1><p>${longText}</p><a href="/alpha">Alpha</a><a href="/beta">Beta</a><a href="https://example.org/out">External</a></article></body></html>`);
     return;
   }
+  if (url.pathname === "/huge-page") {
+    hitCounters.huge += 1;
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><html><head><title>Huge Fixture</title></head><body><article><h1>Huge Fixture</h1><p>${hugeText}</p></article></body></html>`);
+    return;
+  }
   if (url.pathname === "/paper.pdf") {
+    hitCounters.pdf += 1;
     res.writeHead(200, { "content-type": "application/pdf", "content-length": longPdf.length });
     res.end(longPdf);
     return;
@@ -369,7 +417,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === "/arxiv") {
-    arxivHitCounter.count += 1;
+    hitCounters.arxiv += 1;
     res.writeHead(429, { "content-type": "text/plain; charset=utf-8" });
     res.end("Rate Exceeded");
     return;
@@ -381,10 +429,12 @@ const server = http.createServer((req, res) => {
 const port = await listen(server);
 const baseUrl = `http://127.0.0.1:${port}`;
 try {
-  const nodeTools = await runRuntime("node", process.execPath, [nodeServer], baseUrl, arxivHitCounter);
+  const nodeTools = await runRuntime("node", process.execPath, [nodeServer], baseUrl, hitCounters);
+  await assertFullProfile("node", process.execPath, [nodeServer], baseUrl);
   const python = findPython();
   if (python) {
-    const pythonTools = await runRuntime("python", python.command, [...python.args, pythonServer], baseUrl, arxivHitCounter);
+    const pythonTools = await runRuntime("python", python.command, [...python.args, pythonServer], baseUrl, hitCounters);
+    await assertFullProfile("python", python.command, [...python.args, pythonServer], baseUrl);
     const nodeMap = toolMap(nodeTools);
     const pythonMap = toolMap(pythonTools);
     assert.deepEqual([...nodeMap.keys()].sort(), [...pythonMap.keys()].sort(), "Node/Python tool names diverged");

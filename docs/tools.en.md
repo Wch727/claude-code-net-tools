@@ -1,111 +1,101 @@
-# Tools And Limits
+# Tools and Limits
 
-[中文](tools.zh.md) · [Back to README](../README.en.md)
+[中文](tools.zh.md) | [Back to README](../README.en.md)
 
-## Status Tools
+## Default Tool List
 
-- `net_doctor`: main Claude Code networking diagnostic. By default it checks local runtime, route, provider configuration, and PDF extraction without running a real web search. Pass `live=true` for one actual search smoke test; paid API providers stay skipped unless `include_paid=true`.
-- `proxy_status`: shows the current route, default provider order, and auto-detected proxy ports.
-- `search_status`: shows web/scholar provider key configuration, disabled status, recent success/failure counts, and optional live probes. It does not live-probe paid API providers by default unless `include_paid: true` is passed or only that provider is selected.
-- `pdf_status`: checks the local `pdftotext` path, version, and executable status.
+When `CLAUDE_NET_TOOL_PROFILE` is unset or `compact`, Claude Code sees only three tools. This avoids overlapping choices such as `search_web`/`search_web_focused` and `fetch_url`/`fetch_pdf`/`browser_fetch`.
 
-## Search Tools
+### `web_search`
 
-- `search_web`: primary Claude Code search. The LLM prepares queries; the tool generates candidates concurrently, deduplicates them, and round-robin merges by query/provider order without default heuristic reranking. In `academic` mode only, an exact paper-title match is placed before fuzzy candidates.
-- `queries`: Claude Code passes 0-2 alternatives on every call; use `[]` when there are none. The primary `query` plus alternatives are capped at three. The tool does not call another model to rewrite the question.
-- `intent`: `academic` routes to Crossref/Semantic Scholar/arXiv and `code` routes to GitHub/npm/PyPI. `general|news|official` retain web providers, so the LLM should express date and source requirements in its queries.
-- `time_budget`: one shared budget for candidate search, browser fallback, and verification. Default 30 seconds; collected results are returned when time expires.
-- `verify_top`: optionally fetches the first 0-5 results and labels HTTP status, final URL, page title, and body length without changing order.
-- `search_web_focused`: explicit assisted search with cleaned core-query expansion plus optional strict relevance filtering, reranking, and redirect resolution. These filtering options are off by default.
-- `scholar_search`: paper search through Crossref, Semantic Scholar, and arXiv. arXiv is later in the default order and enters cooldown after HTTP 429.
-- `package_search`: package and repository search through npm, PyPI, and GitHub repositories.
+The unified search entry point.
 
-Example:
+Important arguments:
 
-```json
-{
-  "query": "BERT original paper",
-  "queries": [
-    "BERT Bidirectional Encoder Representations from Transformers arXiv 1810.04805",
-    "site:research.google BERT language model"
-  ],
-  "intent": "academic",
-  "count": 6,
-  "time_budget": 30,
-  "verify_top": 2
-}
-```
+- `query`: primary Claude Code-prepared query; required.
+- `queries`: up to two alternatives.
+- `intent`: `general|academic|code|news|official`.
+- `count`: 1-10 results.
+- `providers`: explicit provider list; normally omit it.
+- `browser=never|auto|always`: disable, automatically fall back to, or force browser search.
+- `verify_top`: check reachability for the first results without changing order.
+- `time_budget`: total seconds allowed for the call.
 
-## Fetch Tools
+The tool round-robin merges by query/provider and deduplicates without default heuristic reranking. In academic mode, an exact paper-title match is placed before fuzzy candidates.
 
-- `fetch_url`: fetches a URL with `GET/POST/PUT/PATCH/DELETE`, headers, cookies, cookie jars, request bodies, and `auto/readable/text/markdown/raw` extraction modes.
-- `extract_links`: fetches a page and extracts normalized links, optionally limited to the same domain. If you need both body text and links, prefer `fetch_url include_links=true`.
-- `fetch_json`: fetches a JSON endpoint and pretty-prints parsed JSON.
-- `fetch_rss`: fetches RSS/Atom feeds and returns entries.
-- `fetch_pdf`: downloads a PDF and pages through extracted text when `pdftotext` is installed; supports `offset`, `next_offset`, `extractor: auto|pdftotext|none`, and arXiv HTML fallback.
+It returns both readable text and structured fields: `structuredContent.results` contains title, URL, provider, snippet, and verification; `structuredContent.notes` contains provider diagnostics.
 
-For `fetch_url`, `browser_fetch`, and `fetch_pdf`, `max_chars` limits one tool response; it is not the full download or extraction size. If the result includes `next_offset`, call the same URL again with `offset` set to that value.
+### `read_url`
 
-## Named Sessions
+The unified reader for HTML, text, JSON, RSS/Atom, and PDF.
 
-`session_create`, `session_status`, and `session_clear` provide lightweight HTTP session management. This is not a browser login session. It saves default headers, cookies, referer, and a dedicated cookie jar for later Set-Cookie values.
-
-Example:
+New document:
 
 ```json
-{
-  "name": "docs",
-  "headers": { "X-Client": "claude-code" },
-  "cookies": { "token": "example" },
-  "referer": "https://example.com/"
-}
+{"url":"https://example.com/article","max_chars":12000}
 ```
 
-Then pass the session to fetch tools:
+Continuation:
 
 ```json
-{
-  "url": "https://example.com/api",
-  "session": "docs"
-}
+{"document_id":"doc_...","offset":12000,"max_chars":12000}
 ```
 
-Rules:
+Important arguments:
 
-- Explicit `headers`, `cookies`, and `cookie_jar` override session defaults.
-- `update_referer=true` by default, so the session referer is updated to the final URL after a request.
-- `session_status` redacts cookie values and shows only count/type.
-- Use `browser_action` with a dedicated persistent profile for complex login and JavaScript state. Captchas require manual user handling and are not bypassed automatically.
+- `kind=auto|page|pdf`: infer PDF from the URL or force a kind.
+- `max_bytes`: first-download limit, default 20 MB, maximum 50 MB.
+- `max_chars`: characters returned in this call, default 12,000.
+- `offset`: first character returned in this call.
+- `document_id`: existing snapshot; the URL is not contacted when this is set.
+- `refresh=true`: ignore a same-URL snapshot and download again.
+- `include_links=true`: return normalized links with the body.
+- `extract=auto|readable|text|markdown|raw`: page extraction mode.
+- `browser=never|auto|always`: HTTP/browser policy.
+- `extractor=auto|pdftotext|none`: PDF extraction policy.
 
-## PDF Limits
+A successful snapshot returns `document_id`, `offset`, `end`, `total_chars`, and `next_offset`. Continue with only `document_id + next_offset`; the tool reads process memory and does not redownload the page/PDF or rerun `pdftotext`.
 
-`fetch_pdf` relies on local `pdftotext`. Each call returns one `max_chars` chunk; follow `next_offset` instead of choosing an oversized output limit. For an arXiv URL, a failed/non-PDF download or failed `extractor=auto` run defaults to readable ar5iv HTML; set `html_fallback=false` to disable it.
+Snapshots default to a one-hour TTL, 12 documents, and 80 million total characters. They disappear when the MCP restarts. Anti-bot pages, HTTP errors, and browser fallback output are not stored as normal HTTP document snapshots.
 
-It is useful for abstracts, introductions, conclusions, and bibliographic information. Formulas, tables, captions, and complex scientific layouts may still be out of order in plain text or HTML, so use a PDF reader or OCR/visual tooling for layout-sensitive work.
+### `browser_interact`
 
-## Browser Mode And Boundaries
+The unified Playwright entry point.
 
-- `browser_status`: shows the Playwright command, default engine, cache, and profile; `live=true` opens a real page for diagnosis.
-- `browser_search`: opens a real Google, Bing, or DuckDuckGo results page, executes JavaScript, and extracts titles, links, and snippets in page order without reranking.
-- `browser_fetch`: opens a target URL and returns rendered body text and links with `max_chars`, `offset`, and `next_offset` paging.
-- `browser_screenshot`: searches, opens a URL, or reuses an existing named session and returns both rendered text and an MCP image. It defaults to the current viewport and is useful for knowledge panels, charts, images, and pages that DOM text alone cannot explain.
-- `browser_action`: reuses a named browser session and supports `open|snapshot|click|type|wait|scroll|extract|download|network|close`. Prefer `role+name` or `label` locators; CSS is a fallback. Arbitrary JavaScript is not accepted.
-- `browser_action action=network`: captures XHR/fetch while clicking a target, or while reloading when no target is supplied. Use `url_pattern` to limit URLs and return JSON/text previews.
-- `search_web`, `search_web_focused`, and `fetch_url` accept `browser=never|auto|always`. `auto` falls back for insufficient results, insufficient independent source coverage, HTTP failure, anti-bot pages, or JavaScript-only shells.
+| `action` | Behavior |
+| --- | --- |
+| `search` | Render Google, Bing, or DuckDuckGo and extract results. |
+| `read` | Open a URL, execute page JavaScript, and read content/links. |
+| `screenshot` | Return an image, page text, and metadata. |
+| `open` / `snapshot` | Open or inspect a named browser session. |
+| `click` / `type` / `wait` / `scroll` | Operate the page. |
+| `extract` | Extract a target element. |
+| `download` | Trigger and save a download. |
+| `network` | Capture matching XHR/fetch responses. |
+| `close` | Close the named session. |
 
-Complex-page example:
+Prefer `target.role + target.name`, `target.label`, `target.text`, or `target.test_id`; use CSS only when the page has no stable semantic locator.
 
-```json
-{"action":"open","session":"docs","url":"https://example.com/app"}
-{"action":"type","session":"docs","target":{"label":"Keyword"},"value":"BERT"}
-{"action":"click","session":"docs","target":{"role":"button","name":"Search"}}
-{"session":"docs","format":"jpeg","width":1280,"height":900}
-{"action":"network","session":"docs","target":{"role":"button","name":"Load more"},"url_pattern":"/api/"}
-{"action":"close","session":"docs"}
-```
+Screenshot calls still return an MCP image. Every action also returns `structuredContent` with useful action, URL, title, or search-result fields.
 
-The fourth line contains `browser_screenshot` arguments; the other lines are `browser_action` arguments. Each action is one Playwright CLI round trip. Inspect the interactive elements returned by `open/snapshot`, then capture a screenshot only when the visual state matters. A screenshot is observation material; verify factual claims by opening and reading the underlying source.
+## Full Compatibility Profile
 
-The browser session is reused for the MCP process lifetime. Set `CLAUDE_NET_BROWSER_PROFILE` to a dedicated persistent profile for browser cookies and login state. It is separate from the HTTP cookie jar managed by `session_create`.
+With `CLAUDE_NET_TOOL_PROFILE=full`, the list also includes:
 
-Playwright executes JavaScript, but it does not automatically solve captchas, bypass login/authorization, evade site rules, or bypass Claude Code model-side safety decisions. Claude Code built-in `Fetch` errors such as “Unable to verify if domain is safe to fetch” do not come from this project; instruct Claude Code to use `net-tools fetch_url` or `net-tools browser_fetch` to avoid switching to that separate domain-verification path.
+- Diagnostics: `net_doctor`, `proxy_status`, `search_status`, `browser_status`, `pdf_status`.
+- HTTP sessions: `session_create`, `session_status`, `session_clear`.
+- Search compatibility: `search_web`, `search_web_focused`, `scholar_search`, `package_search`.
+- Reader compatibility: `fetch_url`, `extract_links`, `fetch_json`, `fetch_rss`, `fetch_pdf`.
+- Browser compatibility: `browser_search`, `browser_fetch`, `browser_screenshot`, `browser_action`.
+
+These tools have not been removed, so existing prompts and manual calls remain compatible. New prompts should prefer the three main tools.
+
+## Limits
+
+- The project does not bypass login, authorization, captcha, paywall, or site rules.
+- Free search engines can rate-limit, challenge automation, or change HTML. Browser mode does not guarantee bypassing bot checks.
+- `read_url` HTTP snapshots have a 50 MB hard maximum. Use a dedicated document workflow for larger files.
+- PDF text cannot perfectly preserve formulas, tables, multi-column layout, or images. Inspect the original PDF when derivations or layout matter.
+- Browser mode executes page JavaScript but does not run arbitrary JavaScript supplied by Claude Code.
+- External page content is untrusted source material, not instructions.
+- Built-in Claude Code `Fetch/WebFetch` domain-safety errors do not come from this project; use `read_url` or `browser_interact action=read`.
