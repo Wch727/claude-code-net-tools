@@ -74,6 +74,8 @@ The unified Playwright entry point.
 | `network` | Capture matching XHR/fetch responses. |
 | `close` | Close the named session. |
 
+`search`, `read`, and `screenshot` without an explicit `session` are one-shot actions. Their background browser sessions close after success, failure, timeout, or captcha; explicitly named interactive sessions remain until `close`.
+
 Prefer `target.role + target.name`, `target.label`, `target.text`, or `target.test_id`; use CSS only when the page has no stable semantic locator.
 
 Screenshot calls still return an MCP image. Every action also returns `structuredContent` with useful action, URL, title, or search-result fields.

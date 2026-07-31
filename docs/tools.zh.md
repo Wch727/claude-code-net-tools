@@ -78,6 +78,8 @@
 | `network` | 捕获匹配的 XHR/fetch 响应。 |
 | `close` | 关闭命名 session。 |
 
+未显式提供 `session` 的 `search`、`read` 和 `screenshot` 是一次性动作，无论成功、异常、超时或遇到验证码，后台浏览器会话都会自动关闭。显式命名的交互 session 保留到 `close`。
+
 交互操作优先用 `target.role + target.name`、`target.label`、`target.text` 或 `target.test_id` 定位。只有页面没有稳定语义标识时再用 CSS。
 
 截图结果仍包含 MCP image；所有 action 额外返回 `structuredContent`，方便 Claude Code 读取 action、URL、标题和搜索结果。

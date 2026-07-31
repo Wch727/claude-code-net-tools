@@ -123,6 +123,8 @@ Claude Code can then use one browser interface:
 - `action=screenshot`: return an image plus extractable page text.
 - `action=open|snapshot|click|type|wait|scroll|extract|download|network|close`: operate a complex page through a named session.
 
+Search, read, and screenshot calls without an explicit `session` are one-shot browser actions. Their background sessions close after success or failure; only explicitly named interactive sessions remain open until `close` or MCP shutdown.
+
 Browser mode does not bypass login, captcha, paywall, or authorization. When a challenge page is detected, the tool reports that Playwright works but the page requires verification instead of returning the challenge as content. For manual login/captcha with a dedicated profile:
 
 ```powershell

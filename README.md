@@ -123,6 +123,8 @@ npx --yes --package @playwright/cli playwright-cli install-browser
 - `action=screenshot`：返回页面截图和可提取文字。
 - `action=open|snapshot|click|type|wait|scroll|extract|download|network|close`：在命名 session 中连续操作复杂网页。
 
+未显式提供 `session` 的搜索、读取和截图属于一次性浏览器动作，完成或失败后都会自动关闭后台会话；只有显式命名的复杂交互 session 会保留，直到调用 `close` 或 MCP 退出。
+
 浏览器功能不会自动绕过登录、验证码、付费墙或网站权限。检测到验证页时，工具会明确说明“Playwright 正常，但页面要求验证”，不会把验证页冒充正文。需要手动登录或处理验证码时，可安装为可见浏览器并使用专用 profile：
 
 ```powershell

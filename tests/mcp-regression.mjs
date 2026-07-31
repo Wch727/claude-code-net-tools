@@ -186,6 +186,7 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     const browserHealth = await client.callTool("browser_status", { live: true });
     assertIncludes(browserHealth, "Live check: ok", label + " browser_status");
     assertIncludes(browserHealth, "Example Domain", label + " browser_status");
+    assertIncludes(browserHealth, "Active sessions after live check: 0", label + " browser_status cleanup");
 
     const browserResults = await client.callTool("browser_search", { query: "Rosenblatt XOR Principles of Neurodynamics 1962", count: 3 });
     assertIncludes(browserResults, "Principles of Neurodynamics", label + " browser_search");
@@ -212,6 +213,8 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assertIncludes(action, "Browser action: open", label + " browser_action");
     assertIncludes(action, "Interactive elements: 1", label + " browser_action elements");
     assertIncludes(action, "Load data", label + " browser_action element label");
+    const actionClosed = await client.callTool("browser_action", { action: "close", session: "fixture" });
+    assertIncludes(actionClosed, "Browser session closed", label + " browser_action close");
 
     const multiSearchResult = await client.callToolResult("web_search", {
       query: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
@@ -244,6 +247,9 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     const normalizedEntityQueryNote = entityQueryNote.replaceAll("'", '"');
     assertIncludes(normalizedEntityQueryNote, '"马彦彪"', label + " exact CJK entity query");
     assert.ok(!normalizedEntityQueryNote.includes("人物介绍"), label + " CJK entity filler query must be discarded");
+
+    const browserCleanup = await client.callTool("browser_status", { live: false });
+    assertIncludes(browserCleanup, "Active sessions: 0", label + " one-shot browser session cleanup");
 
 
     const beforeLegacyPage = hitCounters.page;
