@@ -139,6 +139,7 @@ API key 只从环境变量读取，不要写进代码、README、提交记录或
 | `brave` | `BRAVE_SEARCH_API_KEY` | - |
 | `serper` | `SERPER_API_KEY` 或 `GOOGLE_SERPER_API_KEY` | - |
 | `tavily` | `TAVILY_API_KEY` | - |
+| `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_SEARCH_URL`，默认官方搜索地址；仅用于受信任代理或本地测试 |
 
 只配置 key 不等于一定会调用付费 API。默认搜索仍优先免费 provider；低成本配置建议用 `CLAUDE_NET_SEARCH_PROVIDERS=bing_rss,duckduckgo,bing_html`。只有明确想用 API 搜索时，再把 Kimi/MiniMax/其他 API provider 加进去。
 

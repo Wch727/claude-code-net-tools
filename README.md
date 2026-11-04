@@ -1,5 +1,26 @@
 # Claude Code Net Tools
 
+## DeepSeek 搜索
+
+支持官方 `POST https://api.deepseek.com/v1/tools/search`。在 Windows PowerShell 设置以下用户环境变量，然后完全退出并重新启动 Claude Code/VS Code：
+
+```powershell
+[Environment]::SetEnvironmentVariable('DEEPSEEK_API_KEY', '你的密钥', 'User')
+[Environment]::SetEnvironmentVariable('CLAUDE_NET_SEARCH_PROVIDERS', 'deepseek', 'User')
+```
+
+两项配置同时存在时，MCP 自动提供主动搜索说明：人物、近期事实、资料核实和明确的联网请求优先使用本 MCP。仅设置密钥不会改变默认搜索源。无需手动复制提示词。模型最终是否调用工具仍由 Claude Code 的模型和其他指令共同决定。
+
+返回内容优先采用 DeepSeek 的长摘要，保留服务端结果顺序，不额外打分重排；查询最多 128 个 Unicode 字符，过长会明确提示缩短。默认不请求整页内容，可继续用 `read_url` 核实原文。搜索按 DeepSeek 官方标准计费；本项目不包含密钥。测试使用本地模拟接口，未验证你的真实账户效果。
+
+## 浏览器依赖与取消请求
+
+默认本地 CLI 的守护进程会每两秒检查启动它的 MCP 是否仍在运行；父进程消失后，只请求关闭自身命名会话，关闭命令限时十秒并可重试。自定义 CLI 不注入此机制。它改善异常退出后的回收，但无法保证卡死的浏览器服务响应，也不代表已经定位所有白框来源。
+
+升级后在仓库目录运行 `npm ci`，再运行 `npx --no-install playwright-cli install-browser`。Node 和 Python 两版的浏览器功能共用仓库中锁定版本的 Playwright CLI；普通 Python HTTP 读取不需要安装它。运行期间直接调用本地入口，不再逐次运行 npx 下载或解析依赖。自定义 CLI 环境变量仍然可用。
+
+两版支持 MCP 取消通知，并在搜索时间预算耗尽时停止底层请求。浏览器打开失败会尝试关闭该会话；关闭失败的记录保留供后续关闭或退出时重试。清理仍依赖 CLI 成功响应，强制结束 MCP 或系统崩溃不保证清理成功。错误信息会隐藏已识别的认证信息，Node HTTP 请求通过标准输入传递 curl 配置。
+
 [English](README.en.md)
 
 给 Claude Code 使用的本地联网 MCP。它解决的问题很具体：当 Claude Code 内置搜索不可用、内置 `Fetch/WebFetch` 报域名安全校验、免费搜索源不稳定，或者需要读取长网页、PDF、JavaScript 页面时，让 Claude Code 改用本机工具完成搜索和读取。
@@ -112,8 +133,9 @@ arXiv PDF 下载失败、返回非 PDF 或自动提取失败时，可回退到 a
 首次使用前运行：
 
 ```powershell
-npx --yes --package @playwright/cli playwright-cli --help
-npx --yes --package @playwright/cli playwright-cli install-browser
+npm ci
+npx --no-install playwright-cli --help
+npx --no-install playwright-cli install-browser
 ```
 
 之后 Claude Code 可以通过一个入口执行：

@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
+import { operation, runProcess as execFileAsync, runCurl, remember, redact, sanitize, checkOperation } from "./runtime.mjs";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import readline from "node:readline";
-import { promisify, TextDecoder } from "node:util";
+import { TextDecoder } from "node:util";
 
-const execFileAsync = promisify(execFile);
 const SERVER_NAME = "claude-code-net-tools";
 const SERVER_VERSION = "0.12.4";
 const MCP_INSTRUCTIONS = [
@@ -32,11 +33,22 @@ const PROVIDER_FAIL_LIMIT = Math.max(1, Math.min(Number(process.env.CLAUDE_NET_P
 const PROVIDER_STATS = new Map();
 const ARXIV_COOLDOWN_MS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_ARXIV_COOLDOWN_MS) || 5000, 60000));
 const ARXIV_API_URL = process.env.CLAUDE_NET_ARXIV_API_URL || "https://export.arxiv.org/api/query";
-const DEFAULT_NPX_CLI = process.platform === "win32" ? path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npx-cli.js") : "";
-const PLAYWRIGHT_COMMAND = process.env.CLAUDE_NET_PLAYWRIGHT_COMMAND || (process.platform === "win32" ? process.execPath : "npx");
+const require = createRequire(import.meta.url);
+const PLAYWRIGHT_COMMAND = process.env.CLAUDE_NET_PLAYWRIGHT_COMMAND || process.execPath;
 const PLAYWRIGHT_PREFIX_ARGS = process.env.CLAUDE_NET_PLAYWRIGHT_COMMAND
   ? (() => { try { const value = JSON.parse(process.env.CLAUDE_NET_PLAYWRIGHT_ARGS || "[]"); return Array.isArray(value) ? value.map(String) : []; } catch { return []; } })()
-  : [...(DEFAULT_NPX_CLI ? [DEFAULT_NPX_CLI] : []), "--yes", "--package", "@playwright/cli", "playwright-cli"];
+  : [];
+
+function playwrightInvocation() {
+  if (process.env.CLAUDE_NET_PLAYWRIGHT_COMMAND) return PLAYWRIGHT_PREFIX_ARGS;
+  try {
+    const manifest = require.resolve("@playwright/cli/package.json");
+    const pkg = require(manifest);
+    return [path.resolve(path.dirname(manifest), pkg.bin["playwright-cli"])];
+  } catch {
+    throw new Error("Local Playwright CLI missing. Run npm ci in the net-tools directory, then npx --no-install playwright-cli install-browser.");
+  }
+}
 const BROWSER_SESSION = "claude-net-tools-" + process.pid;
 const BROWSER_WORK_DIR = process.env.CLAUDE_NET_BROWSER_WORK_DIR || path.join(os.tmpdir(), "claude-net-tools-playwright", BROWSER_SESSION);
 const DEFAULT_BROWSER_ENGINE = String(process.env.CLAUDE_NET_BROWSER_ENGINE || "google").trim().toLowerCase();
@@ -61,6 +73,7 @@ const SEARCH_PROVIDER_META = {
   brave: { kind: "api", env: ["BRAVE_SEARCH_API_KEY"], description: "Brave Search API" },
   serper: { kind: "api", env: ["SERPER_API_KEY", "GOOGLE_SERPER_API_KEY"], description: "Serper Google Search API" },
   tavily: { kind: "api", env: ["TAVILY_API_KEY"], description: "Tavily Search API" },
+  deepseek: { kind: "api", env: ["DEEPSEEK_API_KEY"], description: "DeepSeek Search API" },
   duckduckgo: { kind: "free", env: [], description: "DuckDuckGo HTML fallback" },
   bing_rss: { kind: "free", env: [], description: "Bing RSS fallback" },
   bing_html: { kind: "free", env: [], description: "Bing HTML fallback" },
@@ -914,6 +927,7 @@ function splitCurlMeta(stdout) {
 }
 
 async function curlRequest(url, { method = "GET", headers = {}, body = null, timeout = 12, maxBytes = 900000, cookies = null, cookieJar = "" } = {}) {
+  const deadline = performance.now() + timeout * 1000;
   const routes = await proxyCandidates();
   const jar = await cookieJarFile(cookieJar);
   const errors = [];
@@ -927,11 +941,13 @@ async function curlRequest(url, { method = "GET", headers = {}, body = null, tim
     if (body !== null && body !== undefined) args.push("--data-raw", typeof body === "string" ? body : JSON.stringify(body));
     args.push(url);
     try {
-      const { stdout } = await execFileAsync(CURL, args, { encoding: "buffer", windowsHide: true, maxBuffer: maxBytes + 65536, timeout: Math.ceil((timeout + 3) * 1000) });
+      checkOperation();
+      if (performance.now() >= deadline) throw new Error("time budget exhausted");
+      const { stdout } = await runCurl(CURL, args, { encoding: "buffer", maxBuffer: maxBytes + 65536, timeout: deadline - performance.now() });
       const meta = splitCurlMeta(stdout);
       return { text: meta.text, route: proxy || "direct", status: meta.status, contentType: meta.contentType, finalUrl: meta.finalUrl || url };
     } catch (error) {
-      errors.push(`${proxy || "direct"}: ${error.message}`);
+      errors.push(redact(`${proxy || "direct"}: ${error.message}`));
     }
   }
   throw new Error(errors.join("; "));
@@ -973,9 +989,9 @@ function parsePlaywrightOutput(stdout) {
   const text = String(stdout || "").trim();
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error("Playwright CLI did not return JSON: " + text.slice(0, 300));
+  if (start < 0 || end < start) throw new Error("Playwright CLI did not return JSON");
   const envelope = JSON.parse(text.slice(start, end + 1));
-  if (envelope.error) throw new Error(typeof envelope.error === "string" ? envelope.error : JSON.stringify(envelope.error));
+  if (envelope.error) throw new Error("Playwright CLI reported an action error");
   const raw = envelope.result;
   if (typeof raw !== "string") return raw;
   const trimmed = raw.trim();
@@ -987,20 +1003,28 @@ function parsePlaywrightOutput(stdout) {
 async function runPlaywright(args, { parseResult = false, timeout = BROWSER_TIMEOUT } = {}) {
   try {
     await fs.mkdir(BROWSER_WORK_DIR, { recursive: true });
-    const finalArgs = [...PLAYWRIGHT_PREFIX_ARGS, ...args, "--json"];
+    const invocation = playwrightInvocation();
+    const finalArgs = [...invocation, ...args, "--json"];
+    const env = { ...process.env };
+    if (!process.env.CLAUDE_NET_PLAYWRIGHT_COMMAND) {
+      env.CLAUDE_NET_OWNER_PID = String(process.pid);
+      env.CLAUDE_NET_OWNER_CLI = invocation[0];
+      env.NODE_OPTIONS = (env.NODE_OPTIONS || "") + ' --require ' + JSON.stringify(fileURLToPath(new URL('./browser-owner.cjs', import.meta.url)));
+    }
     const { stdout } = await execFileAsync(PLAYWRIGHT_COMMAND, finalArgs, {
       cwd: BROWSER_WORK_DIR,
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
-      timeout: Math.ceil((timeout + 5) * 1000),
-      env: process.env,
+      timeout: Math.ceil(timeout * 1000),
+      env,
     });
-    return parseResult ? parsePlaywrightOutput(stdout) : String(stdout || "");
+    const parsed = parsePlaywrightOutput(stdout);
+    return parseResult ? parsed : String(stdout || "");
   } catch (error) {
-    const detail = [error.message, error.stderr, error.stdout].filter(Boolean).join(" | ").slice(0, 1200);
+    const detail = redact(error.message).slice(0, 1200);
     const installHint = /ENOENT|not found|not recognized|cannot find|missing executable|browser.*not installed/i.test(detail)
-      ? ". Install it with: npx --yes --package @playwright/cli playwright-cli install-browser"
+      ? ". Install it with: npm ci && npx --no-install playwright-cli install-browser"
       : "";
     throw new Error("Playwright CLI failed: " + detail + installHint);
   }
@@ -1026,24 +1050,22 @@ async function closeBrowser() {
   try {
     for (const sessionName of [...BROWSER_STARTED_SESSIONS]) {
       try {
-        await runPlaywright(["-s=" + sessionName, "close"], { timeout: 10 });
+        await closeBrowserSession(sessionName);
       } catch {
         // A browser session may already have exited with its MCP parent.
       }
     }
   } finally {
-    BROWSER_STARTED_SESSIONS.clear();
     browserClosing = false;
   }
 }
 
 async function closeBrowserSession(sessionName) {
   try {
-    await runPlaywright(["-s=" + sessionName, "close"], { timeout: 10 });
-  } catch {
-    // The session may already have exited.
-  } finally {
+    await operation.run(undefined, () => runPlaywright(["-s=" + sessionName, "close"], { timeout: 10 }));
     BROWSER_STARTED_SESSIONS.delete(sessionName);
+  } catch {
+    // Keep ownership so explicit close or shutdown can retry.
   }
 }
 
@@ -1056,8 +1078,13 @@ async function browserNavigate(url, sessionName = BROWSER_SESSION, timeout = BRO
     if (/^(1|true|yes|on)$/i.test(String(process.env.CLAUDE_NET_BROWSER_HEADED || ""))) args.push("--headed");
     const profile = String(process.env.CLAUDE_NET_BROWSER_PROFILE || "").trim();
     if (profile) args.push("--persistent", "--profile", profile);
-    await runPlaywright(args, { timeout });
     BROWSER_STARTED_SESSIONS.add(sessionName);
+    try {
+      await runPlaywright(args, { timeout });
+    } catch (error) {
+      await closeBrowserSession(sessionName);
+      throw error;
+    }
   } else {
     await runPlaywright([sessionArg, "goto", url], { timeout });
   }
@@ -1070,7 +1097,7 @@ async function browserRunCode(runCode, { sessionName = BROWSER_SESSION, timeout 
     await fs.writeFile(scriptPath, runCode, "utf8");
     return await runPlaywright(["-s=" + sessionName, "run-code", "--filename=" + scriptPath], { parseResult: true, timeout });
   } catch (error) {
-    throw new Error((error.message || String(error)) + " | " + sourceLabel + ": " + runCode.slice(0, 700).replace(/\s+/g, " "));
+    throw new Error(redact(error.message || String(error)) + " | " + sourceLabel);
   } finally {
     await fs.rm(scriptPath, { force: true }).catch(() => {});
   }
@@ -1641,6 +1668,7 @@ async function browserStatus(args = {}) {
 }
 
 async function curlDownload(url, targetPath, { method = "GET", headers = {}, body = null, timeout = 30, maxBytes = 50000000, cookies = null, cookieJar = "" } = {}) {
+  const deadline = performance.now() + timeout * 1000;
   const routes = await proxyCandidates();
   const jar = await cookieJarFile(cookieJar);
   const errors = [];
@@ -1654,17 +1682,20 @@ async function curlDownload(url, targetPath, { method = "GET", headers = {}, bod
     if (body !== null && body !== undefined) args.push("--data-raw", typeof body === "string" ? body : JSON.stringify(body));
     args.push(url);
     try {
-      const { stdout } = await execFileAsync(CURL, args, { encoding: "utf8", windowsHide: true, maxBuffer: 65536, timeout: Math.ceil((timeout + 3) * 1000) });
+      checkOperation();
+      if (performance.now() >= deadline) throw new Error("time budget exhausted");
+      const { stdout } = await runCurl(CURL, args, { encoding: "utf8", maxBuffer: 65536, timeout: deadline - performance.now() });
       const [status = "", contentType = "", finalUrl = ""] = stdout.replace("__CLAUDE_NET_META__", "").trim().split("\t");
       return { route: proxy || "direct", status, contentType, finalUrl: finalUrl || url };
     } catch (error) {
-      errors.push(`${proxy || "direct"}: ${error.message}`);
+      errors.push(redact(`${proxy || "direct"}: ${error.message}`));
     }
   }
   throw new Error(errors.join("; "));
 }
 
 async function curlFinalUrl(url, { timeout = 8 } = {}) {
+  const deadline = performance.now() + timeout * 1000;
   const routes = await proxyCandidates();
   const errors = [];
   for (const proxy of routes) {
@@ -1672,11 +1703,13 @@ async function curlFinalUrl(url, { timeout = 8 } = {}) {
     if (proxy) args.push("--proxy", proxy); else args.push("--noproxy", "*");
     args.push(url);
     try {
-      const { stdout } = await execFileAsync(CURL, args, { encoding: "utf8", windowsHide: true, maxBuffer: 65536, timeout: Math.ceil((timeout + 3) * 1000) });
+      checkOperation();
+      if (performance.now() >= deadline) throw new Error("time budget exhausted");
+      const { stdout } = await runCurl(CURL, args, { encoding: "utf8", maxBuffer: 65536, timeout: deadline - performance.now() });
       const [status = "", finalUrl = ""] = stdout.replace("__CLAUDE_NET_META__", "").trim().split("\t");
       return { status, finalUrl: finalUrl || url, route: proxy || "direct" };
     } catch (error) {
-      errors.push(`${proxy || "direct"}: ${error.message}`);
+      errors.push(redact(`${proxy || "direct"}: ${error.message}`));
     }
   }
   throw new Error(errors.join("; "));
@@ -1942,6 +1975,20 @@ async function searchSerper(query, count) {
   return (data.organic || []).map((item) => result(item.title, item.link, item.snippet, "serper"));
 }
 
+async function searchDeepSeek(query, count) {
+  const key = (process.env.DEEPSEEK_API_KEY || "").trim();
+  if (!key) throw new Error("DEEPSEEK_API_KEY is not configured");
+  if (!query.trim() || [...query].length > 128) throw new Error("DeepSeek query must contain 1 to 128 Unicode characters; shorten the query");
+  const response = await curlRequest(process.env.DEEPSEEK_SEARCH_URL || "https://api.deepseek.com/v1/tools/search", {
+    method: "POST", headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, count: Math.max(1, Math.min(count, 50)), need_content: false }), timeout: 20,
+  });
+  if (Number(response.status) !== 200) throw new Error("DeepSeek Search HTTP " + response.status);
+  const data = JSON.parse(response.text);
+  if (!Array.isArray(data.results)) throw new Error("Invalid DeepSeek search response: results must be an array");
+  return data.results.filter(item => item && /^https?:\/\//i.test(item.url || "")).map(item => result(item.title, item.url, item.summary || item.snippet || "", "deepseek"));
+}
+
 async function searchTavily(query, count) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return [];
@@ -2126,6 +2173,7 @@ async function runProvider(provider, query, count) {
   if (name === "kimi" || name === "minimax") return searchChatWeb(name, query, count);
   if (name === "brave") return searchBrave(query, count);
   if (name === "serper") return searchSerper(query, count);
+  if (name === "deepseek") return searchDeepSeek(query, count);
   if (name === "tavily") return searchTavily(query, count);
   if (name === "duckduckgo") return searchDuckDuckGo(query, count);
   if (name === "bing_rss") return searchBingRss(query, count);
@@ -2597,21 +2645,17 @@ function normalizedSearchIntent(value) {
 
 function searchDeadline(args) {
   const seconds = Math.max(5, Math.min(Number(args?.time_budget) || DEFAULT_SEARCH_BUDGET_SECONDS, 120));
+  const context = operation.getStore();
+  if (context) context.deadline = Math.min(context.deadline, performance.now() + seconds * 1000);
   return { seconds, at: Date.now() + seconds * 1000 };
 }
 
 async function runWithinDeadline(factory, deadline, label) {
   const remaining = deadline - Date.now();
   if (remaining < 1) throw new Error("time budget exhausted before " + label);
-  let timer;
-  try {
-    return await Promise.race([
-      Promise.resolve().then(factory),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("time budget exhausted during " + label)), remaining); }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  const parent = operation.getStore();
+  return operation.run({ signal: parent?.signal || new AbortController().signal,
+    deadline: Math.min(parent?.deadline ?? Infinity, performance.now() + remaining) }, factory);
 }
 
 function intentProviderOrder(intent, query, override, notes) {
@@ -3643,10 +3687,20 @@ async function browserInteract(args = {}) {
 }
 
 const COMPACT_TOOL_NAMES = new Set(["web_search", "read_url", "browser_interact"]);
-function listedTools() {
-  return TOOL_PROFILE === "full" ? TOOLS : TOOLS.filter((tool) => COMPACT_TOOL_NAMES.has(tool.name));
+function deepSeekEnabled() {
+  return !!(process.env.DEEPSEEK_API_KEY || '').trim() &&
+    (process.env.CLAUDE_NET_SEARCH_PROVIDERS || '').split(',').map(x => x.trim()).includes('deepseek') &&
+    !(process.env.CLAUDE_NET_DISABLED_PROVIDERS || '').split(',').map(x => x.trim()).includes('deepseek');
 }
-function send(message) { process.stdout.write(`${JSON.stringify(message)}\n`); }
+const DEEPSEEK_POLICY = "DeepSeek Search is explicitly configured. Proactively call net-tools web_search with providers=[deepseek] for current facts, named people, source verification, documentation, or explicit web research; do not wait for built-in WebSearch to fail. Use intent=general for this web provider, including paper discovery. Preserve exact names; for broader questions prepare a concise query under 129 Unicode characters. Read original sources with read_url when claims need verification. Use one query first; reformulate once only if results are insufficient. Do not add paid alternatives or repeat a failed or rate-limited request. For stable knowledge that needs no verification, answer directly. ";
+function serverInstructions() {
+  return deepSeekEnabled() ? DEEPSEEK_POLICY : MCP_INSTRUCTIONS;
+}
+function listedTools() {
+  const selected = TOOL_PROFILE === "full" ? TOOLS : TOOLS.filter((tool) => COMPACT_TOOL_NAMES.has(tool.name));
+  return selected.map(tool => deepSeekEnabled() && tool.name === 'web_search' ? { ...tool, description: DEEPSEEK_POLICY } : tool);
+}
+function send(message) { process.stdout.write(`${JSON.stringify(message.error || message.result?.isError ? sanitize(message) : message)}\n`); }
 function sendResult(id, result) { send({ jsonrpc: "2.0", id, result }); }
 function sendError(id, code, message) { send({ jsonrpc: "2.0", id, error: { code, message } }); }
 
@@ -3680,33 +3734,47 @@ async function callTool(name, args) {
 
 async function handle(message) {
   const { id, method, params } = message;
+  if (method === "notifications/cancelled") {
+    activeRequests.get(params?.requestId)?.abort();
+    return;
+  }
   if (!Object.prototype.hasOwnProperty.call(message, "id")) return;
-  if (method === "initialize") return sendResult(id, { protocolVersion: params?.protocolVersion || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: SERVER_NAME, version: SERVER_VERSION }, instructions: MCP_INSTRUCTIONS });
+  if (method === "initialize") return sendResult(id, { protocolVersion: params?.protocolVersion || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: SERVER_NAME, version: SERVER_VERSION }, instructions: serverInstructions() });
   if (method === "ping") return sendResult(id, {});
   if (method === "tools/list") return sendResult(id, { tools: listedTools() });
   if (method === "resources/list") return sendResult(id, { resources: [] });
   if (method === "prompts/list") return sendResult(id, { prompts: [] });
   if (method === "tools/call") {
+    const controller = new AbortController();
+    if (activeRequests.has(id)) return sendError(id, -32600, "Duplicate active request id");
+    activeRequests.set(id, controller);
+    remember(params?.arguments);
     try {
-      const output = await callTool(params?.name, params?.arguments || {});
+      const output = await operation.run({ signal: controller.signal, deadline: Infinity }, () => callTool(params?.name, params?.arguments || {}));
       const result = output && typeof output === "object" && Array.isArray(output.content)
         ? output
         : { content: [{ type: "text", text: String(output ?? "") }] };
-      sendResult(id, result);
+      if (!controller.signal.aborted) sendResult(id, result);
     } catch (error) {
-      sendResult(id, { content: [{ type: "text", text: error.message || String(error) }], isError: true });
+      if (!controller.signal.aborted) sendResult(id, { content: [{ type: "text", text: redact(error.message || String(error)) }], isError: true });
+    } finally {
+      activeRequests.delete(id);
     }
     return;
   }
   sendError(id, -32601, `Method not found: ${method}`);
 }
 
+const activeRequests = new Map();
+const activeHandlers = new Set();
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
   try {
-    handle(JSON.parse(trimmed)).catch((error) => sendError(null, -32603, error.message || String(error)));
+    const pending = handle(JSON.parse(trimmed)).catch((error) => sendError(null, -32603, redact(error.message || String(error))));
+    activeHandlers.add(pending);
+    pending.finally(() => activeHandlers.delete(pending));
   } catch {
     sendError(null, -32700, "Parse error");
   }
@@ -3715,6 +3783,8 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  for (const controller of activeRequests.values()) controller.abort();
+  await Promise.allSettled([...activeHandlers]);
   await closeBrowser();
   process.exit(0);
 }

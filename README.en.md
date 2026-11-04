@@ -1,5 +1,26 @@
 # Claude Code Net Tools
 
+## DeepSeek Search
+
+Supports the official `POST https://api.deepseek.com/v1/tools/search`. In Windows PowerShell, set these user environment variables and fully restart Claude Code/VS Code:
+
+```powershell
+[Environment]::SetEnvironmentVariable('DEEPSEEK_API_KEY', 'your-key', 'User')
+[Environment]::SetEnvironmentVariable('CLAUDE_NET_SEARCH_PROVIDERS', 'deepseek', 'User')
+```
+
+With both configured, initialization instructions and the search tool description proactively direct current facts, people, verification, and explicit research to this MCP. Setting a key alone does not change defaults. No manual prompt copying is needed; actual tool selection still depends on the model and other Claude Code instructions.
+
+Results use DeepSeek's detailed summaries and preserve server order without local scoring. Queries exceeding 128 Unicode characters receive an actionable error. Full page content is not requested by default; use `read_url` to verify sources. Official DeepSeek billing applies. No credentials are included. Tests use a local mock endpoint, not your live account.
+
+## Browser Dependencies and Cancellation
+
+The default local CLI daemon checks its MCP owner every two seconds. When the owner disappears, it requests closure of its own named session, with a ten-second command timeout and retries. Custom CLIs are not instrumented. This improves recovery after abnormal exits but cannot guarantee that a hung browser service responds or explain every blank-window symptom.
+
+After upgrading, run `npm ci` in the repository, then `npx --no-install playwright-cli install-browser`. Both runtimes share the locally pinned Playwright CLI; ordinary Python HTTP reads do not require it. Browser operations invoke the local entry point directly without running npx each time. Custom CLI environment variables remain supported.
+
+Both runtimes handle MCP cancellation and stop underlying requests when the search budget expires. Failed browser opens trigger session cleanup; failed closes retain their registration for retry or shutdown. Cleanup still depends on a successful CLI response; forced termination or system crashes can leave processes behind. Diagnostics redact recognized credentials, and Node HTTP requests pass curl configuration through stdin.
+
 [中文](README.md)
 
 A local web-access MCP for Claude Code. It addresses a specific problem: Claude Code's built-in search may be unavailable, built-in `Fetch/WebFetch` may reject a domain, free search endpoints may be unreliable, or the task may require long documents, PDFs, or JavaScript-rendered pages.
@@ -112,8 +133,9 @@ For arXiv URLs, failed/non-PDF downloads or failed automatic extraction can fall
 Before first use:
 
 ```powershell
-npx --yes --package @playwright/cli playwright-cli --help
-npx --yes --package @playwright/cli playwright-cli install-browser
+npm ci
+npx --no-install playwright-cli --help
+npx --no-install playwright-cli install-browser
 ```
 
 Claude Code can then use one browser interface:

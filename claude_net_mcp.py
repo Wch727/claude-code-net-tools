@@ -24,6 +24,9 @@ import sys
 import tempfile
 import time
 import traceback
+import threading
+import signal
+from runtime import Operation, operation, run_process, submit, remember, redact, sanitize, check_operation
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -73,6 +76,7 @@ SEARCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=12, thread_n
 ARXIV_RATE_LIMITED_UNTIL = 0.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 TRANSPORT_MODE = ""
+SEND_LOCK = threading.Lock()
 PROVIDER_FAIL_LIMIT = max(1, min(int(os.environ.get("CLAUDE_NET_PROVIDER_FAIL_LIMIT", "3")), 10))
 PROVIDER_STATS: dict[str, dict[str, Any]] = {}
 HIDDEN_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
@@ -82,6 +86,7 @@ SEARCH_PROVIDER_META = {
     "brave": {"kind": "api", "env": ["BRAVE_SEARCH_API_KEY"], "description": "Brave Search API"},
     "serper": {"kind": "api", "env": ["SERPER_API_KEY", "GOOGLE_SERPER_API_KEY"], "description": "Serper Google Search API"},
     "tavily": {"kind": "api", "env": ["TAVILY_API_KEY"], "description": "Tavily Search API"},
+    "deepseek": {"kind": "api", "env": ["DEEPSEEK_API_KEY"], "description": "DeepSeek Search API"},
     "duckduckgo": {"kind": "free", "env": [], "description": "DuckDuckGo HTML fallback"},
     "bing_rss": {"kind": "free", "env": [], "description": "Bing RSS fallback"},
     "bing_html": {"kind": "free", "env": [], "description": "Bing HTML fallback"},
@@ -100,13 +105,14 @@ def _json_dump(data: Any) -> str:
 
 
 def _send(message: dict[str, Any]) -> None:
-    body = _json_dump(message).encode("utf-8")
-    if TRANSPORT_MODE == "headers":
-        sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
-        sys.stdout.buffer.write(body)
-    else:
-        sys.stdout.buffer.write(body + b"\n")
-    sys.stdout.buffer.flush()
+    body = _json_dump(sanitize(message) if message.get("error") or (message.get("result") or {}).get("isError") else message).encode("utf-8")
+    with SEND_LOCK:
+        if TRANSPORT_MODE == "headers":
+            sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
+            sys.stdout.buffer.write(body)
+        else:
+            sys.stdout.buffer.write(body + b"\n")
+        sys.stdout.buffer.flush()
 
 
 def _read_message() -> dict[str, Any] | None:
@@ -550,6 +556,24 @@ def _opener(proxy: str | None, cookie_jar: Any = "") -> urllib.request.OpenerDir
 
 
 def _request_url(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int = MAX_FETCH_BYTES, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None, cookies: Any = None, cookie_jar: Any = "") -> tuple[str, str, bytes, str, int]:
+    remember({"url": url, "headers": headers, "cookies": cookies})
+    payload = dict(url=url, timeout=timeout, max_bytes=max_bytes, method=method, headers=headers,
+                   body=base64.b64encode(body).decode("ascii") if body is not None else None,
+                   cookies=cookies, cookie_jar=cookie_jar)
+    # urllib reads and DNS can block beyond a socket timeout; isolate and reap them.
+    completed = run_process([sys.executable, os.path.abspath(__file__), "--http-worker"],
+                            input=json.dumps(payload), capture_output=True, text=True,
+                            encoding="utf-8", timeout=timeout, check=True,
+                            creationflags=HIDDEN_SUBPROCESS_FLAGS)
+    result = json.loads(completed.stdout)
+    if "error" in result:
+        raise RuntimeError(redact(result["error"]))
+    result["response"][2] = base64.b64decode(result["response"][2])
+    return tuple(result["response"])
+
+
+def _request_url_impl(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int = MAX_FETCH_BYTES, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None, cookies: Any = None, cookie_jar: Any = "") -> tuple[str, str, bytes, str, int]:
+    deadline = time.monotonic() + timeout
     errors: list[str] = []
     final_headers = {
         "User-Agent": USER_AGENT,
@@ -562,11 +586,15 @@ def _request_url(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int =
     if direct_cookies:
         final_headers["Cookie"] = (final_headers.get("Cookie", "") + "; " + direct_cookies).strip("; ")
     for proxy in _proxy_candidates():
+        check_operation()
+        remaining_time = deadline - time.monotonic()
+        if remaining_time <= 0:
+            raise TimeoutError("time budget exhausted")
         label = proxy or "direct"
         request = urllib.request.Request(url, data=body, headers=final_headers, method=method)
         try:
             opener = _opener(proxy, cookie_jar)
-            with opener.open(request, timeout=timeout) as response:
+            with opener.open(request, timeout=remaining_time) as response:
                 chunks: list[bytes] = []
                 remaining = max_bytes
                 while remaining > 0:
@@ -594,7 +622,7 @@ def _request_url(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int =
                 remaining -= len(chunk)
             return exc.geturl(), exc.headers.get("content-type", ""), b"".join(chunks), label, int(exc.code)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{label}: {exc}")
+            errors.append(redact(f"{label}: {type(exc).__name__}"))
     raise urllib.error.URLError("; ".join(errors))
 
 
@@ -919,6 +947,24 @@ def _search_serper(query: str, count: int) -> list[dict[str, str]]:
     return [_result(item.get("title"), item.get("link"), item.get("snippet"), "serper") for item in data.get("organic", [])]
 
 
+def _search_deepseek(query: str, count: int) -> list[dict[str, str]]:
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("DEEPSEEK_API_KEY is not configured")
+    if not query.strip() or len(query) > 128:
+        raise ValueError("DeepSeek query must contain 1 to 128 Unicode characters; shorten the query")
+    _, _, body, _, status = _request_url(os.environ.get("DEEPSEEK_SEARCH_URL") or "https://api.deepseek.com/v1/tools/search", method="POST", timeout=20,
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        body=json.dumps({"query": query, "count": max(1, min(count, 50)), "need_content": False}).encode("utf-8"))
+    if int(status) != 200:
+        raise RuntimeError("DeepSeek Search HTTP " + str(status))
+    data = json.loads(body)
+    if not isinstance(data.get("results"), list):
+        raise ValueError("Invalid DeepSeek search response: results must be an array")
+    return [_result(item.get("title"), item["url"], item.get("summary") or item.get("snippet") or "", "deepseek")
+            for item in data["results"] if isinstance(item, dict) and re.match(r"^https?://", item.get("url", ""), re.I)]
+
+
 def _search_tavily(query: str, count: int) -> list[dict[str, str]]:
     key = os.environ.get("TAVILY_API_KEY", "").strip()
     if not key:
@@ -1150,11 +1196,12 @@ def _playwright_invocation() -> list[str]:
             extra = []
         return [custom, *[str(value) for value in extra]]
     node = shutil.which("node")
-    if os.name == "nt" and node:
-        npx_cli = os.path.join(os.path.dirname(node), "node_modules", "npm", "bin", "npx-cli.js")
-        if os.path.isfile(npx_cli):
-            return [node, npx_cli, "--yes", "--package", "@playwright/cli", "playwright-cli"]
-    return [shutil.which("npx") or "npx", "--yes", "--package", "@playwright/cli", "playwright-cli"]
+    manifest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_modules", "@playwright", "cli", "package.json")
+    if node and os.path.isfile(manifest):
+        with open(manifest, encoding="utf-8") as handle:
+            package = json.load(handle)
+        return [node, os.path.join(os.path.dirname(manifest), package["bin"]["playwright-cli"])]
+    raise RuntimeError("Local Playwright CLI missing. Run npm ci in the net-tools directory, then npx --no-install playwright-cli install-browser.")
 
 
 def _parse_playwright_output(stdout: str) -> Any:
@@ -1162,10 +1209,10 @@ def _parse_playwright_output(stdout: str) -> Any:
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end < start:
-        raise RuntimeError("Playwright CLI did not return JSON: " + text[:300])
+        raise RuntimeError("Playwright CLI did not return JSON")
     envelope = json.loads(text[start : end + 1])
     if envelope.get("error"):
-        raise RuntimeError(str(envelope["error"]))
+        raise RuntimeError("Playwright CLI reported an action error")
     raw = envelope.get("result")
     if not isinstance(raw, str):
         return raw
@@ -1176,28 +1223,34 @@ def _parse_playwright_output(stdout: str) -> Any:
 
 
 def _run_playwright(args: list[str], parse_result: bool = False, timeout: float = BROWSER_TIMEOUT) -> Any:
-    command = [*_playwright_invocation(), *args, "--json"]
+    invocation = _playwright_invocation()
+    command = [*invocation, *args, "--json"]
+    env = os.environ.copy()
+    if not os.environ.get("CLAUDE_NET_PLAYWRIGHT_COMMAND"):
+        env["CLAUDE_NET_OWNER_PID"] = str(os.getpid())
+        env["CLAUDE_NET_OWNER_CLI"] = invocation[1]
+        hook = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser-owner.cjs")
+        env["NODE_OPTIONS"] = env.get("NODE_OPTIONS", "") + " --require " + json.dumps(hook)
     try:
         os.makedirs(BROWSER_WORK_DIR, exist_ok=True)
-        completed = subprocess.run(
+        completed = run_process(
             command,
             cwd=BROWSER_WORK_DIR,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout + 5,
+            timeout=timeout,
             check=True,
             creationflags=HIDDEN_SUBPROCESS_FLAGS,
-            env=os.environ.copy(),
+            env=env,
         )
-        return _parse_playwright_output(completed.stdout) if parse_result else completed.stdout
+        parsed = _parse_playwright_output(completed.stdout)
+        return parsed if parse_result else completed.stdout
     except (OSError, subprocess.SubprocessError) as exc:
-        stderr = getattr(exc, "stderr", "") or ""
-        stdout = getattr(exc, "stdout", "") or ""
-        detail = " | ".join(part for part in [str(exc), stderr, stdout] if part)[:1200]
+        detail = redact(str(exc))[:1200]
         install_hint = (
-            ". Install it with: npx --yes --package @playwright/cli playwright-cli install-browser"
+            ". Install it with: npm ci && npx --no-install playwright-cli install-browser"
             if re.search(r"ENOENT|not found|not recognized|cannot find|missing executable|browser.*not installed", detail, flags=re.I) else ""
         )
         raise RuntimeError(
@@ -1221,19 +1274,17 @@ def _browser_timeout_for(deadline: float = float("inf"), fallback: float = BROWS
 
 def _close_browser() -> None:
     for session_name in list(BROWSER_STARTED_SESSIONS):
-        try:
-            _run_playwright(["-s=" + session_name, "close"], timeout=10)
-        except Exception:  # noqa: BLE001
-            pass
-    BROWSER_STARTED_SESSIONS.clear()
+        _close_browser_session(session_name)
 
 def _close_browser_session(session_name: str) -> None:
+    token = operation.set(None)
     try:
         _run_playwright(["-s=" + session_name, "close"], timeout=10)
+        BROWSER_STARTED_SESSIONS.discard(session_name)
     except Exception:  # noqa: BLE001
         pass
     finally:
-        BROWSER_STARTED_SESSIONS.discard(session_name)
+        operation.reset(token)
 
 
 def _browser_navigate(url: str, session_name: str = BROWSER_SESSION, timeout: float = BROWSER_TIMEOUT) -> None:
@@ -1248,8 +1299,12 @@ def _browser_navigate(url: str, session_name: str = BROWSER_SESSION, timeout: fl
         profile = os.environ.get("CLAUDE_NET_BROWSER_PROFILE", "").strip()
         if profile:
             args.extend(["--persistent", "--profile", profile])
-        _run_playwright(args, timeout=timeout)
         BROWSER_STARTED_SESSIONS.add(session_name)
+        try:
+            _run_playwright(args, timeout=timeout)
+        except Exception:
+            _close_browser_session(session_name)
+            raise
     else:
         _run_playwright([session_arg, "goto", url], timeout=timeout)
 
@@ -1262,8 +1317,7 @@ def _browser_run_code(run_code: str, *, session_name: str = BROWSER_SESSION, tim
             handle.write(run_code)
         return _run_playwright(["-s=" + session_name, "run-code", "--filename=" + script_path], parse_result=True, timeout=timeout)
     except Exception as exc:
-        compact_source = re.sub(r"\s+", " ", run_code[:700])
-        raise RuntimeError(str(exc) + " | " + source_label + ": " + compact_source) from exc
+        raise RuntimeError(redact(exc) + " | " + source_label) from None
     finally:
         try:
             os.remove(script_path)
@@ -1961,6 +2015,8 @@ def _run_provider(provider: str, query: str, count: int) -> list[dict[str, str]]
         return _search_brave(query, count)
     if name == "serper":
         return _search_serper(query, count)
+    if name == "deepseek":
+        return _search_deepseek(query, count)
     if name == "tavily":
         return _search_tavily(query, count)
     if name == "duckduckgo":
@@ -2078,7 +2134,7 @@ def _indent_block(text: str, prefix: str = "  ") -> str:
 
 def _command_version(command: str, args: list[str] | None = None) -> str:
     try:
-        proc = subprocess.run(
+        proc = run_process(
             [command] + (args or ["--version"]),
             check=True,
             capture_output=True,
@@ -2473,6 +2529,9 @@ def _normalized_search_intent(value: Any) -> str:
 
 def _search_deadline(arguments: dict[str, Any]) -> tuple[float, float]:
     seconds = max(5.0, min(float(arguments.get("time_budget", DEFAULT_SEARCH_BUDGET_SECONDS)), 120.0))
+    context = operation.get()
+    if context:
+        context.deadline = min(context.deadline, time.monotonic() + seconds)
     return seconds, time.time() + seconds
 
 
@@ -2480,11 +2539,11 @@ def _run_with_deadline(factory: Any, deadline: float, label: str) -> Any:
     remaining = deadline - time.time()
     if remaining <= 0:
         raise TimeoutError("time budget exhausted before " + label)
-    future = SEARCH_EXECUTOR.submit(factory)
-    try:
-        return future.result(timeout=remaining)
-    except concurrent.futures.TimeoutError as exc:
-        raise TimeoutError("time budget exhausted during " + label) from exc
+    check_operation()
+    context = operation.get()
+    if context:
+        context.deadline = min(context.deadline, time.monotonic() + remaining)
+    return factory()
 
 
 def _intent_provider_order(intent: str, query: str, override: Any, notes: list[str]) -> list[str]:
@@ -2574,9 +2633,9 @@ def _verify_search_rows(rows: list[dict[str, Any]], limit: Any, deadline: float,
         except Exception as exc:  # noqa: BLE001
             copy["verification"] = "failed: " + str(exc)[:220]
         return copy
-    futures = [SEARCH_EXECUTOR.submit(verify, row) for row in rows[:verify_count]]
+    futures = [submit(SEARCH_EXECUTOR, verify, row) for row in rows[:verify_count]]
     remaining = max(0.0, deadline - time.time())
-    done, _ = concurrent.futures.wait(futures, timeout=remaining)
+    done, _ = concurrent.futures.wait(futures)
     verified: list[dict[str, Any]] = []
     for index, future in enumerate(futures):
         if future in done:
@@ -2625,8 +2684,8 @@ def search_web(arguments: dict[str, Any]) -> str:
                 notes.append("q" + str(index) + " browser: " + str(exc))
                 break
     else:
-        futures = [SEARCH_EXECUTOR.submit(_search_query_candidates, value, arguments, intent, count, deadline) for value in queries]
-        done, _ = concurrent.futures.wait(futures, timeout=max(0.0, deadline - time.time()))
+        futures = [submit(SEARCH_EXECUTOR, _search_query_candidates, value, arguments, intent, count, deadline) for value in queries]
+        done, _ = concurrent.futures.wait(futures)
         for index, future in enumerate(futures, start=1):
             if future in done:
                 try:
@@ -3384,7 +3443,7 @@ def pdf_status(arguments: dict[str, Any]) -> str:
     lines = ["PDF extraction status:", f"Command: {tool}"]
     lines.append("Source: CLAUDE_NET_PDFTOTEXT" if os.environ.get("CLAUDE_NET_PDFTOTEXT") else "Source: PATH lookup for pdftotext")
     try:
-        proc = subprocess.run(
+        proc = run_process(
             [tool, "-v"],
             check=True,
             capture_output=True,
@@ -3508,7 +3567,7 @@ def fetch_pdf(arguments: dict[str, Any]) -> str:
             handle.write(body)
         tool = _pdf_text_tool()
         try:
-            subprocess.run(
+            run_process(
                 [tool, "-layout", pdf_path, text_path],
                 check=True,
                 capture_output=True,
@@ -3858,8 +3917,17 @@ def browser_interact(arguments: dict[str, Any]) -> dict[str, Any]:
 COMPACT_TOOL_NAMES = {"web_search", "read_url", "browser_interact"}
 
 
+DEEPSEEK_POLICY = "DeepSeek Search is explicitly configured. Proactively call net-tools web_search with providers=[deepseek] for current facts, named people, source verification, documentation, or explicit web research; do not wait for built-in WebSearch to fail. Use intent=general for this web provider, including paper discovery. Preserve exact names; for broader questions prepare a concise query under 129 Unicode characters. Read original sources with read_url when claims need verification. Use one query first; reformulate once only if results are insufficient. Do not add paid alternatives or repeat a failed or rate-limited request. For stable knowledge that needs no verification, answer directly. "
+
+def _deepseek_enabled() -> bool:
+    return bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()) and "deepseek" in _split_list(os.environ.get("CLAUDE_NET_SEARCH_PROVIDERS", "")) and "deepseek" not in _disabled_provider_set()
+
+def _server_instructions() -> str:
+    return DEEPSEEK_POLICY if _deepseek_enabled() else MCP_INSTRUCTIONS
+
 def _listed_tools() -> list[dict[str, Any]]:
-    return TOOLS if TOOL_PROFILE == "full" else [tool for tool in TOOLS if tool.get("name") in COMPACT_TOOL_NAMES]
+    selected = TOOLS if TOOL_PROFILE == "full" else [tool for tool in TOOLS if tool.get("name") in COMPACT_TOOL_NAMES]
+    return [{**tool, "description": DEEPSEEK_POLICY} if _deepseek_enabled() and tool["name"] == "web_search" else tool for tool in selected]
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
     if name == "web_search":
@@ -3921,15 +3989,18 @@ def _handle(message: dict[str, Any]) -> None:
         return
     try:
         if method == "initialize":
-            _send({"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": params.get("protocolVersion") or "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}, "instructions": MCP_INSTRUCTIONS}})
+            _send({"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": params.get("protocolVersion") or "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}, "instructions": _server_instructions()}})
         elif method == "tools/list":
             _send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": _listed_tools()}})
         elif method == "tools/call":
+            check_operation()
+            remember(params.get("arguments") or {})
             started = time.time()
             output = _call_tool(str(params.get("name", "")), params.get("arguments") or {})
             result = output if isinstance(output, dict) and isinstance(output.get("content"), list) else {"content": [{"type": "text", "text": str(output)}]}
             result["_meta"] = {**(result.get("_meta") or {}), "elapsedMs": int((time.time() - started) * 1000)}
-            _send({"jsonrpc": "2.0", "id": request_id, "result": result})
+            if not operation.get() or not operation.get().cancelled.is_set():
+                _send({"jsonrpc": "2.0", "id": request_id, "result": result})
         elif method in {"resources/list", "prompts/list"}:
             key = "resources" if method == "resources/list" else "prompts"
             _send({"jsonrpc": "2.0", "id": request_id, "result": {key: []}})
@@ -3938,7 +4009,9 @@ def _handle(message: dict[str, Any]) -> None:
         else:
             _send(_error_response(request_id, -32601, f"Method not found: {method}"))
     except Exception as exc:  # noqa: BLE001
-        detail = traceback.format_exc() if os.environ.get("CLAUDE_NET_DEBUG") else str(exc)
+        if operation.get() and operation.get().cancelled.is_set():
+            return
+        detail = redact(traceback.format_exc() if os.environ.get("CLAUDE_NET_DEBUG") else str(exc))
         if method == "tools/call":
             _send({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": detail}], "isError": True}})
         else:
@@ -3946,14 +4019,60 @@ def _handle(message: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    active = {}
+    active_lock = threading.Lock()
+    # Preserve sequential tool mutations while the reader receives cancellation.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-call")
+    def dispatch(message, context):
+        token = operation.set(context)
+        try:
+            _handle(message)
+        finally:
+            operation.reset(token)
+            with active_lock:
+                active.pop(message["id"], None)
+    def stop(signum, frame):
+        raise SystemExit(0)
+    for name in ("SIGINT", "SIGTERM"):
+        signal.signal(getattr(signal, name), stop)
     try:
         while True:
             message = _read_message()
             if message is None:
                 return 0
-            _handle(message)
+            if message.get("method") == "notifications/cancelled":
+                with active_lock:
+                    context = active.get((message.get("params") or {}).get("requestId"))
+                    if context:
+                        context.cancelled.set()
+            elif message.get("method") == "tools/call" and "id" in message:
+                with active_lock:
+                    if message["id"] in active:
+                        _send(_error_response(message["id"], -32600, "Duplicate active request id"))
+                        continue
+                    context = Operation()
+                    active[message["id"]] = context
+                executor.submit(dispatch, message, context)
+            else:
+                _handle(message)
     finally:
+        with active_lock:
+            for context in active.values():
+                context.cancelled.set()
+        executor.shutdown(wait=True)
+        SEARCH_EXECUTOR.shutdown(wait=True, cancel_futures=True)
         _close_browser()
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:] == ["--http-worker"]:
+        payload = json.load(sys.stdin)
+        if payload.get("body") is not None:
+            payload["body"] = base64.b64decode(payload["body"])
+        try:
+            result = list(_request_url_impl(**payload))
+            result[2] = base64.b64encode(result[2]).decode("ascii")
+            print(json.dumps({"response": result}))
+        except Exception as exc:
+            print(json.dumps({"error": redact(str(exc))}))
+    else:
+        raise SystemExit(main())

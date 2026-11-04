@@ -139,6 +139,7 @@ API keys are read only from environment variables. Do not write them into code, 
 | `brave` | `BRAVE_SEARCH_API_KEY` | - |
 | `serper` | `SERPER_API_KEY` or `GOOGLE_SERPER_API_KEY` | - |
 | `tavily` | `TAVILY_API_KEY` | - |
+| `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_SEARCH_URL`, defaults to the official search endpoint; trusted proxies or local tests only |
 
 Setting a key alone does not force paid API usage. Defaults still prefer free providers; for a low-cost setup use `CLAUDE_NET_SEARCH_PROVIDERS=bing_rss,duckduckgo,bing_html`. Add Kimi/MiniMax/other API providers only when you explicitly want API search.
 

@@ -3,12 +3,16 @@
   "version": "0.12.4",
   "description": "Local VPN/proxy-aware MCP web search and URL fetch tools for Claude Code.",
   "type": "module",
+  "dependencies": {
+    "@playwright/cli": "0.1.23"
+  },
   "bin": {
     "claude-code-net-tools": "./claude_net_mcp.mjs"
   },
   "scripts": {
     "check": "node --check claude_net_mcp.mjs && (py -3 -m py_compile claude_net_mcp.py || python3 -m py_compile claude_net_mcp.py || python -m py_compile claude_net_mcp.py)",
-    "test": "npm run check && node tests/mcp-regression.mjs",
+    "test": "npm run check && node tests/mcp-regression.mjs && node tests/safety-regression.mjs && node tests/browser-owner.mjs",
+    "test:safety": "node tests/safety-regression.mjs",
     "test:browser-live": "node tests/browser-live-smoke.mjs",
     "start": "node claude_net_mcp.mjs"
   },
