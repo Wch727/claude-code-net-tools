@@ -10,6 +10,7 @@
     "claude-code-net-tools": "./claude_net_mcp.mjs"
   },
   "scripts": {
+    "quality": "node tests/quality/run.mjs",
     "check": "node --check claude_net_mcp.mjs && (py -3 -m py_compile claude_net_mcp.py || python3 -m py_compile claude_net_mcp.py || python -m py_compile claude_net_mcp.py)",
     "test": "npm run check && node tests/mcp-regression.mjs && node tests/safety-regression.mjs && node tests/browser-owner.mjs",
     "test:safety": "node tests/safety-regression.mjs",

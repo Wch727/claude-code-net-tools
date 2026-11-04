@@ -141,6 +141,7 @@ try {
       const start = Date.now();
       const timeout = await client.call("fetch_json", { url: base + "/slow?token=query-secret", timeout: 1 });
       assert.equal(timeout.result.isError, true);
+      assert.match(JSON.stringify(timeout), /time budget exhausted/, name + " deadline diagnostic must not be reported as an unavailable subprocess");
       assert.ok(Date.now() - start < 3500, name + " HTTP timeout is total, not per read");
       await until(() => active.size === 0, name + " timed out HTTP socket closed");
 

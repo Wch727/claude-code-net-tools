@@ -108,5 +108,7 @@ def run_process(command, *, timeout=120, input=None, check=False, capture_output
                 if child.poll() is None:
                     child.kill()
                     child.communicate()
+    except TimeoutError:
+        raise
     except OSError as exc:
         raise RuntimeError(f"Subprocess unavailable (errno {exc.errno})") from None

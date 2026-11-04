@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+质量验收入口：`npm run quality`。固定题库、报告字段和“原生工具 + Playwright”对照步骤见[质量验收](docs/quality.zh.md)。真实浏览器与联网测试分别通过 `--browser`、`--live` 显式启用；本地模拟通过不等于真实搜索质量提升。
+
 本项目作为按需备用工具维护。普通搜索和网页读取优先使用 Claude Code 原生 WebSearch/WebFetch；浏览器操作优先使用已有 Playwright MCP。只有需要长文档快照、分页续读、特殊搜索源、会话或代理时，再启用 net-tools。
 
 停用：`claude mcp remove net-tools -s user`。这只移除注册，保留仓库。恢复：在仓库目录运行 `./scripts/install-claude-code.ps1 -Scope user -Force`，然后重启 Claude Code。已有会话可能继续保留旧工具，需要退出并新建会话。

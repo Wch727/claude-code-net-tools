@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+Run `npm run quality` for acceptance reporting. See [Quality Acceptance](docs/quality.en.md) for fixed cases, metrics, and the native-tools + Playwright comparison procedure. Opt into real-browser and public-web checks with `--browser` and `--live`; passing fixtures does not establish better live search quality.
+
 Maintained as an optional fallback. Prefer native Claude Code WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser operations. Enable net-tools only for document snapshots, pagination, custom providers, sessions, or proxy routing.
 
 Disable with `claude mcp remove net-tools -s user`; repository files remain intact. To restore, run `./scripts/install-claude-code.ps1 -Scope user -Force` from the repository, then restart Claude Code. Existing sessions may retain the old tools, so start a fresh session.
