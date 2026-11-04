@@ -3917,17 +3917,12 @@ def browser_interact(arguments: dict[str, Any]) -> dict[str, Any]:
 COMPACT_TOOL_NAMES = {"web_search", "read_url", "browser_interact"}
 
 
-DEEPSEEK_POLICY = "DeepSeek Search is explicitly configured. Proactively call net-tools web_search with providers=[deepseek] for current facts, named people, source verification, documentation, or explicit web research; do not wait for built-in WebSearch to fail. Use intent=general for this web provider, including paper discovery. Preserve exact names; for broader questions prepare a concise query under 129 Unicode characters. Read original sources with read_url when claims need verification. Use one query first; reformulate once only if results are insufficient. Do not add paid alternatives or repeat a failed or rate-limited request. For stable knowledge that needs no verification, answer directly. "
-
-def _deepseek_enabled() -> bool:
-    return bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()) and "deepseek" in _split_list(os.environ.get("CLAUDE_NET_SEARCH_PROVIDERS", "")) and "deepseek" not in _disabled_provider_set()
-
 def _server_instructions() -> str:
-    return DEEPSEEK_POLICY if _deepseek_enabled() else MCP_INSTRUCTIONS
+    return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS
 
 def _listed_tools() -> list[dict[str, Any]]:
     selected = TOOLS if TOOL_PROFILE == "full" else [tool for tool in TOOLS if tool.get("name") in COMPACT_TOOL_NAMES]
-    return [{**tool, "description": DEEPSEEK_POLICY} if _deepseek_enabled() and tool["name"] == "web_search" else tool for tool in selected]
+    return [{**tool, "description": "Prefer an existing Playwright MCP for browser work. Use this browser tool only when explicitly requested or that browser integration is unavailable. " + tool["description"]} if tool["name"] == "browser_interact" else tool for tool in selected]
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
     if name == "web_search":

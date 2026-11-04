@@ -1,5 +1,9 @@
 # Claude Code Net Tools
 
+Maintained as an optional fallback. Prefer native Claude Code WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser operations. Enable net-tools only for document snapshots, pagination, custom providers, sessions, or proxy routing.
+
+Disable with `claude mcp remove net-tools -s user`; repository files remain intact. To restore, run `./scripts/install-claude-code.ps1 -Scope user -Force` from the repository, then restart Claude Code. Existing sessions may retain the old tools, so start a fresh session.
+
 ## DeepSeek Search
 
 Supports the official `POST https://api.deepseek.com/v1/tools/search`. In Windows PowerShell, set these user environment variables and fully restart Claude Code/VS Code:
@@ -9,7 +13,7 @@ Supports the official `POST https://api.deepseek.com/v1/tools/search`. In Window
 [Environment]::SetEnvironmentVariable('CLAUDE_NET_SEARCH_PROVIDERS', 'deepseek', 'User')
 ```
 
-With both configured, initialization instructions and the search tool description proactively direct current facts, people, verification, and explicit research to this MCP. Setting a key alone does not change defaults. No manual prompt copying is needed; actual tool selection still depends on the model and other Claude Code instructions.
+These settings select DeepSeek when net-tools is used; they do not give this MCP priority over native search. Ordinary searches can use DeepSeek's native WebSearch integration in Claude Code. This adapter remains available for custom-provider workflows.
 
 Results use DeepSeek's detailed summaries and preserve server order without local scoring. Queries exceeding 128 Unicode characters receive an actionable error. Full page content is not requested by default; use `read_url` to verify sources. Official DeepSeek billing applies. No credentials are included. Tests use a local mock endpoint, not your live account.
 

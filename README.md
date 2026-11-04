@@ -1,5 +1,9 @@
 # Claude Code Net Tools
 
+本项目作为按需备用工具维护。普通搜索和网页读取优先使用 Claude Code 原生 WebSearch/WebFetch；浏览器操作优先使用已有 Playwright MCP。只有需要长文档快照、分页续读、特殊搜索源、会话或代理时，再启用 net-tools。
+
+停用：`claude mcp remove net-tools -s user`。这只移除注册，保留仓库。恢复：在仓库目录运行 `./scripts/install-claude-code.ps1 -Scope user -Force`，然后重启 Claude Code。已有会话可能继续保留旧工具，需要退出并新建会话。
+
 ## DeepSeek 搜索
 
 支持官方 `POST https://api.deepseek.com/v1/tools/search`。在 Windows PowerShell 设置以下用户环境变量，然后完全退出并重新启动 Claude Code/VS Code：
@@ -9,7 +13,7 @@
 [Environment]::SetEnvironmentVariable('CLAUDE_NET_SEARCH_PROVIDERS', 'deepseek', 'User')
 ```
 
-两项配置同时存在时，MCP 自动提供主动搜索说明：人物、近期事实、资料核实和明确的联网请求优先使用本 MCP。仅设置密钥不会改变默认搜索源。无需手动复制提示词。模型最终是否调用工具仍由 Claude Code 的模型和其他指令共同决定。
+以上配置仅指定调用 net-tools 时使用 DeepSeek，不会让 MCP 优先于原生搜索。普通搜索可直接使用 DeepSeek 在 Claude Code 中提供的原生 WebSearch；这个封装保留给需要自定义搜索源的场景。
 
 返回内容优先采用 DeepSeek 的长摘要，保留服务端结果顺序，不额外打分重排；查询最多 128 个 Unicode 字符，过长会明确提示缩短。默认不请求整页内容，可继续用 `read_url` 核实原文。搜索按 DeepSeek 官方标准计费；本项目不包含密钥。测试使用本地模拟接口，未验证你的真实账户效果。
 

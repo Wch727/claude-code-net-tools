@@ -3687,18 +3687,12 @@ async function browserInteract(args = {}) {
 }
 
 const COMPACT_TOOL_NAMES = new Set(["web_search", "read_url", "browser_interact"]);
-function deepSeekEnabled() {
-  return !!(process.env.DEEPSEEK_API_KEY || '').trim() &&
-    (process.env.CLAUDE_NET_SEARCH_PROVIDERS || '').split(',').map(x => x.trim()).includes('deepseek') &&
-    !(process.env.CLAUDE_NET_DISABLED_PROVIDERS || '').split(',').map(x => x.trim()).includes('deepseek');
-}
-const DEEPSEEK_POLICY = "DeepSeek Search is explicitly configured. Proactively call net-tools web_search with providers=[deepseek] for current facts, named people, source verification, documentation, or explicit web research; do not wait for built-in WebSearch to fail. Use intent=general for this web provider, including paper discovery. Preserve exact names; for broader questions prepare a concise query under 129 Unicode characters. Read original sources with read_url when claims need verification. Use one query first; reformulate once only if results are insufficient. Do not add paid alternatives or repeat a failed or rate-limited request. For stable knowledge that needs no verification, answer directly. ";
 function serverInstructions() {
-  return deepSeekEnabled() ? DEEPSEEK_POLICY : MCP_INSTRUCTIONS;
+  return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS;
 }
 function listedTools() {
   const selected = TOOL_PROFILE === "full" ? TOOLS : TOOLS.filter((tool) => COMPACT_TOOL_NAMES.has(tool.name));
-  return selected.map(tool => deepSeekEnabled() && tool.name === 'web_search' ? { ...tool, description: DEEPSEEK_POLICY } : tool);
+  return selected.map(tool => tool.name === 'browser_interact' ? { ...tool, description: 'Prefer an existing Playwright MCP for browser work. Use this browser tool only when explicitly requested or that browser integration is unavailable. ' + tool.description } : tool);
 }
 function send(message) { process.stdout.write(`${JSON.stringify(message.error || message.result?.isError ? sanitize(message) : message)}\n`); }
 function sendResult(id, result) { send({ jsonrpc: "2.0", id, result }); }

@@ -125,7 +125,8 @@ try {
     const entries = () => { try { return readFileSync(log, "utf8").trim().split("\n").map(JSON.parse); } catch { return []; } };
     try {
       const init = await client.response(client.send('initialize'));
-      assert.ok(init.result.instructions.includes('Proactively call net-tools'));
+      assert.ok(init.result.instructions.includes('Prefer native WebSearch/WebFetch'));
+      assert.ok(!init.result.instructions.includes('Proactively call net-tools'));
       const searchResult = await client.call('web_search', { query: 'BERT', providers: ['deepseek'], count: 1, browser: 'never', verify_top: 0 });
       assert.ok(!searchResult.result.isError, JSON.stringify(searchResult));
       assert.ok(JSON.stringify(searchResult).includes('DeepSeek detailed summary'));
