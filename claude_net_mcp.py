@@ -1031,10 +1031,46 @@ def _search_duckduckgo(query: str, count: int) -> list[dict[str, str]]:
     return parser.results[:count]
 
 
+def _search_http_text(url: str, timeout: float = SEARCH_TIMEOUT) -> str:
+    command = os.environ.get("CLAUDE_NET_CURL") or shutil.which("curl.exe" if os.name == "nt" else "curl")
+    if not command:
+        _, content_type, body, _, status = _request_url(url, timeout=timeout)
+        if int(status) >= 400:
+            raise RuntimeError("Search HTTP " + str(status))
+        return _decode_body(body, content_type)
+    deadline = time.monotonic() + timeout
+    errors = []
+    for proxy in _proxy_candidates():
+        check_operation()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("time budget exhausted")
+        # curl config on stdin keeps proxy credentials and URLs out of argv.
+        config = ["location", "silent", "show-error", "max-filesize = 1200000",
+                  "max-time = " + str(remaining), "user-agent = " + json.dumps(USER_AGENT),
+                  "url = " + json.dumps(url), 'write-out = "\\n__SEARCH_STATUS__%{http_code}"']
+        config.append("proxy = " + json.dumps(proxy) if proxy else 'noproxy = "*"')
+        remember(proxy or "")
+        try:
+            response = run_process([command, "-q", "--config", "-"], input=("\n".join(config) + "\n").encode("utf-8"),
+                                   capture_output=True, timeout=remaining, check=True,
+                                   creationflags=HIDDEN_SUBPROCESS_FLAGS)
+            content, marker, status = response.stdout.rpartition(b"\n__SEARCH_STATUS__")
+            if not marker or not status.strip().isdigit():
+                raise RuntimeError("Invalid search HTTP response metadata")
+            if int(status) >= 400:
+                raise RuntimeError("Search HTTP " + status.decode("ascii").strip())
+            return _decode_body(content, "")
+        except (TimeoutError, RuntimeError) as exc:
+            errors.append(redact(str(exc)))
+            if "Search HTTP " in str(exc):
+                raise
+    raise RuntimeError("; ".join(errors))
+
+
 def _search_bing_rss(query: str, count: int) -> list[dict[str, str]]:
     params = {"format": "rss", "q": query, "setlang": "zh-CN", "cc": "CN", "mkt": "zh-CN"} if _is_cjk(query) else {"format": "rss", "q": query, "setlang": "en-US", "cc": "US"}
-    _, content_type, body, _, _ = _request_url("https://www.bing.com/search?" + urllib.parse.urlencode(params), timeout=SEARCH_TIMEOUT)
-    return _parse_bing_rss(_decode_body(body, content_type), count)
+    return _parse_bing_rss(_search_http_text("https://www.bing.com/search?" + urllib.parse.urlencode(params)), count)
 
 
 def _search_bing_html(query: str, count: int) -> list[dict[str, str]]:
@@ -2542,7 +2578,14 @@ def _run_with_deadline(factory: Any, deadline: float, label: str) -> Any:
     check_operation()
     context = operation.get()
     if context:
-        context.deadline = min(context.deadline, time.monotonic() + remaining)
+        scoped = Operation()
+        scoped.cancelled = context.cancelled
+        scoped.deadline = min(context.deadline, time.monotonic() + remaining)
+        token = operation.set(scoped)
+        try:
+            return factory()
+        finally:
+            operation.reset(token)
     return factory()
 
 
@@ -2599,7 +2642,11 @@ def _search_query_candidates(query: str, arguments: dict[str, Any], intent: str,
             notes.append("time budget exhausted before provider " + provider)
             break
         try:
-            raw = _run_with_deadline(lambda p=provider: _run_intent_provider(intent, p, query, count), deadline, provider + " for " + repr(query))
+            remaining_providers = len(providers) - providers.index(provider)
+            remaining_seconds = max(0.0, deadline - time.time())
+            allowance = min(8.0, remaining_seconds / remaining_providers) if remaining_providers > 1 else remaining_seconds
+            provider_deadline = min(deadline, time.time() + allowance)
+            raw = _run_with_deadline(lambda p=provider: _run_intent_provider(intent, p, query, count), provider_deadline, provider + " for " + repr(query))
             added = _add_result_batch(batches, provider, raw)
             notes.append(f"{provider}: {len(raw)} result(s)")
             if raw and not added:

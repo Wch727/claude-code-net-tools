@@ -2705,7 +2705,11 @@ async function searchQueryCandidates(query, args, intent, count, deadline) {
   for (const provider of providers) {
     if (Date.now() >= deadline) { notes.push("time budget exhausted before provider " + provider); break; }
     try {
-      const raw = await runWithinDeadline(() => runIntentProvider(intent, provider, query, count), deadline, provider + " for " + JSON.stringify(query));
+      const remainingProviders = providers.length - providers.indexOf(provider);
+      const remainingMs = Math.max(0, deadline - Date.now());
+      const allowance = remainingProviders > 1 ? Math.min(8000, remainingMs / remainingProviders) : remainingMs;
+      const providerDeadline = Math.min(deadline, Date.now() + allowance);
+      const raw = await runWithinDeadline(() => runIntentProvider(intent, provider, query, count), providerDeadline, provider + " for " + JSON.stringify(query));
       const added = addResultBatch(batches, provider, raw);
       notes.push(provider + ": " + raw.length + " result(s)");
       if (raw.length && !added) notes.push(provider + ": results duplicated an earlier provider");

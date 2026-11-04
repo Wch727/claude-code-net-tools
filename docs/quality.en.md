@@ -50,6 +50,10 @@ HTTP 200, citation count and reachable pages do not prove credibility. Do not as
 
 ## Release Gate
 
+Providers retain configured order. When alternatives remain, the current provider receives at most an equal share of the remaining total budget, capped at eight seconds; the final provider may use the remainder. This reserves fallback opportunities without changing result order or guaranteeing every site responds in time. Python uses a scoped provider deadline while preserving parent cancellation.
+
+Follow-up fix: Python Bing RSS prefers installed curl, aligning its transport with Node; urllib remains available when curl is absent. One Windows live rerun returned three name-search URLs in approximately 8.9 seconds for Node and 11.1 seconds for Python. Python obtained Bing RSS results after DuckDuckGo timed out. Both official-document reads and local suites passed. This demonstrates a working fallback in that run, not guaranteed accuracy or universal performance improvement; link credibility was not automatically reviewed.
+
 Initial Windows observations: both local runtime suites and the real-browser fixture passed. With free providers, Node returned three Chinese-name search URLs in about 16.6 seconds; Python exhausted the 20-second budget. Both runtimes returned official Python documentation body text. These are single-machine observations, without complete source review or a native baseline, not evidence of improved accuracy or speed. Testing found and fixed Python misreporting TimeoutError as an unavailable subprocess; the free-search timeout itself remains unresolved.
 
 Do not release with failing local suites. Disclose skips. Claims of better search need human source review and comparison records. Preserve unmeasured fields instead of filling zeroes or claiming improvement. Keep net-tools optional when the comparison shows no useful gap filled.

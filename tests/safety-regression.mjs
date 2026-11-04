@@ -68,6 +68,14 @@ const killed = operation.run({ signal: ctrl.signal, deadline: Infinity }, () => 
 setTimeout(() => ctrl.abort(), 100);
 await assert.rejects(killed, /cancelled/);
 await assert.rejects(operation.run({ signal: new AbortController().signal, deadline: performance.now() + 100 }, () => runProcess(process.execPath, ["-e", "setInterval(()=>{},1000)"])), /budget/);
+const parent = { signal: new AbortController().signal, deadline: performance.now() + 5000 };
+await operation.run(parent, async () => {
+  const deadline = parent.deadline;
+  await assert.rejects(operation.run({ ...parent, deadline: performance.now() + 100 }, () => runProcess(process.execPath, ['-e', 'setInterval(()=>{},1000)'])), /budget/);
+  const healthy = await runProcess(process.execPath, ['-e', 'process.stdout.write("healthy")'], { encoding: 'utf8' });
+  assert.equal(healthy.stdout, 'healthy');
+  assert.equal(parent.deadline, deadline);
+});
 
 const runtimes = [["node", process.execPath, ["claude_net_mcp.mjs"]]];
 for (const [command, prefix] of [["py", ["-3"]], ["python3", []], ["python", []]]) {
@@ -75,6 +83,9 @@ for (const [command, prefix] of [["py", ["-3"]], ["python3", []], ["python", []]
   if (!result.error && result.status === 0) { runtimes.push(["python", command, [...prefix, "claude_net_mcp.py"]]); break; }
 }
 assert.equal(runtimes.length, 2, "Python is required for the safety suite");
+const pythonRuntime = runtimes[1];
+const budgetCheck = await runProcess(pythonRuntime[1], [...pythonRuntime[2].slice(0, -1), 'tests/provider-budget.py'], { cwd: root, encoding: 'utf8', timeout: 10000 });
+assert.match(budgetCheck.stdout, /healthy fallback ran/);
 
 const active = new Set();
 let hits = 0;
