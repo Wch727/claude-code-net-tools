@@ -49,6 +49,7 @@ export async function runLive(root, cases) {
           const providerErrors = item.category === 'search' && /time budget|Subprocess|HTTP (?:4|5)\d\d|failed|captcha|blocked|timed out/i.test(notes.join('\n') || text);
           rows.push({ runtime: runtime.name, case_id: item.id, status: response.error || response.result?.isError ? 'error' : data?.mode && data.matched !== true ? 'evidence_missing' : urls.length || item.category !== 'search' ? 'returned' : providerErrors ? 'provider_error' : 'empty',
             elapsed_ms: Math.round(performance.now() - start), output_chars: text.length, returned_url_count: urls.length, urls,
+            results: (data?.results || []).map(row => ({ title: row.title, url: row.url, provider: row.provider, snippet: String(row.snippet || '').slice(0, 500) })),
             provider_errors_detected: !!providerErrors, provider_notes: notes,
             source_relevance: null, answer_correctness: null, text_excerpt: text.slice(0, 4000) });
         } catch (error) { rows.push({ runtime: runtime.name, case_id: item.id, status: 'error', elapsed_ms: Math.round(performance.now() - start), reason: error.message }); }

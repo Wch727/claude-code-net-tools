@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chatSources, requiredTerms } from '../search-quality.mjs';
+import { chatSources, requiredTerms, paperItems } from '../search-quality.mjs';
 
 const data = { choices: [{ message: { content: 'An AI summary, not an original page.', annotations: [{ type: 'url_citation', url_citation: { title: 'Original page', url: 'https://example.org/paper' } }] } }] };
 const rows = chatSources(data, 'kimi', 'https://api.moonshot.cn/v1', 3);
@@ -20,6 +20,7 @@ assert.deepEqual(requiredTerms(candidates, ['TaskGroup']), [candidates[1]]);
 assert.deepEqual(requiredTerms(candidates, ['TaskGroup', 'missing']), []);
 assert.deepEqual(requiredTerms([{ ...candidates[0], source_type: 'model_link', snippet: 'AI summary about TaskGroup' }], ['TaskGroup']), [], 'AI summary must not establish source relevance');
 assert.throws(() => requiredTerms(candidates, ['']), /non-empty/);
+assert.deepEqual(paperItems([{ type: 'component', title: ['supplement.docx'] }, { type: 'proceedings-article', title: ['Original paper'] }]), [{ type: 'proceedings-article', title: ['Original paper'] }]);
 let result;
 for (const python of process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python']) {
   result = spawnSync(python, [...(python === 'py' ? ['-3'] : []), 'tests/search-quality.py'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });

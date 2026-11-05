@@ -1,6 +1,9 @@
 import re
 import urllib.parse
 
+def paper_items(items):
+    return [item for item in items if item.get('type') != 'component']
+
 REQUIRED_TERMS_SCHEMA = {"type": "array", "maxItems": 6, "items": {"type": "string", "minLength": 1, "maxLength": 128}, "default": [], "description": "Optional literal terms that must all appear in each result title, URL or snippet (ASCII case-insensitive). Use for distinctive identifiers such as TaskGroup when results are generic. Empty leaves results unchanged; never reranks."}
 SEARCH_GUIDANCE = 'If results ignore a distinctive identifier, reformulate once and set required_terms to that identifier. This is optional literal filtering, not scoring or reranking. AI summaries and model-proposed URLs are unverified; read original URLs before citing them. No original-source URL means no citable result, never an API endpoint substitute.'
 

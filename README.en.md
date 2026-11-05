@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+0.14.2 preserves search snippets, improves card/feed parsing, fixes premature free-candidate truncation and late domain filtering, and excludes Crossref supplementary components. Run `npm ci` when upgrading Node; Python HTTP adds no pip dependency. See [search quality observations](docs/search-quality.en.md), including live failures.
+
 0.14.1 fixes Kimi/MiniMax source URL attribution, adds optional `required_terms`, and fixes PDF download failures bypassing HTML fallback and stages consuming separate timeout budgets. See [fix details and verification limits](docs/search-fixes.en.md). Licensed under [MIT](LICENSE).
 
 New in 0.14: `read_url` accepts `query` to locate passages and `quote` to check extracted text, returning sections, physical PDF pages and source offsets. Providers recover on the next real request after cooldown. Both runtimes support this without adding to the three default tools. See [Document Search and Citation Locations](docs/document-search.en.md). This update does not re-enable a disabled local MCP registration.

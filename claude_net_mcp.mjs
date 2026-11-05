@@ -6,7 +6,8 @@ import { authorizeTool, enabled } from './network-policy.mjs';
 import { privateFile } from './private-storage.mjs';
 import * as health from './provider-health.mjs';
 import { contract, evidence, EVIDENCE_GUIDANCE } from './document-evidence.mjs';
-import { chatSources, requiredTerms, REQUIRED_TERMS_SCHEMA, SEARCH_GUIDANCE } from './search-quality.mjs';
+import { chatSources, requiredTerms, paperItems, REQUIRED_TERMS_SCHEMA, SEARCH_GUIDANCE } from './search-quality.mjs';
+import { parseSearchHtml, parseSearchFeed, candidateLimit } from './search-pages.mjs';
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
@@ -16,7 +17,7 @@ import readline from "node:readline";
 import { TextDecoder } from "node:util";
 
 const SERVER_NAME = "claude-code-net-tools";
-const SERVER_VERSION = "0.14.1";
+const SERVER_VERSION = "0.14.2";
 const MCP_INSTRUCTIONS = [
   "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt.",
   "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall.",
@@ -1764,42 +1765,16 @@ function result(title, url, snippet = "", provider = "") {
 }
 
 function parseBingRss(xml, count, provider = "bing_rss") {
-  const rows = [];
-  const re = /<item>([\s\S]*?)<\/item>/g;
-  let match;
-  while ((match = re.exec(xml)) && rows.length < count) {
-    const item = match[1];
-    const row = result((item.match(/<title>([\s\S]*?)<\/title>/) || [])[1], (item.match(/<link>([\s\S]*?)<\/link>/) || [])[1], (item.match(/<description>([\s\S]*?)<\/description>/) || [])[1], provider);
-    if (row.title && /^https?:\/\//i.test(row.url)) rows.push(row);
-  }
-  return rows;
+  return parseSearchFeed(xml, count, provider).map(row => ({ ...row, url: cleanUrl(row.url) }));
 }
 
 function parseDuckDuckGo(html, count) {
-  const rows = [];
-  const re = /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  let match;
-  while ((match = re.exec(html)) && rows.length < count) {
-    const row = result(match[2], match[1], "", "duckduckgo");
-    if (row.title && /^https?:\/\//i.test(row.url)) rows.push(row);
-  }
-  return rows;
+  return parseSearchHtml(html, count, 'duckduckgo', 'https://html.duckduckgo.com/').map(row => ({ ...row, url: cleanUrl(row.url) }));
 }
 
 function parseGenericHtml(html, count, provider) {
-  const rows = [];
-  const patterns = [/<h[23][^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h[23]>/gi, /<a[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi];
-  for (const re of patterns) {
-    let match;
-    while ((match = re.exec(html)) && rows.length < count) {
-      const row = result(match[2], match[1], "", provider);
-      if (!row.title || row.title.length < 2 || !/^https?:\/\//i.test(row.url)) continue;
-      if (/^(images|videos|maps|news|login|sign in)$/i.test(row.title)) continue;
-      rows.push(row);
-    }
-    if (rows.length) break;
-  }
-  return rows;
+  const base = { bing_html: 'https://www.bing.com/', sogou: 'https://www.sogou.com/', so360: 'https://www.so.com/' }[provider] || 'https://www.bing.com/';
+  return parseSearchHtml(html, count, provider, base).map(row => ({ ...row, url: cleanUrl(row.url) }));
 }
 
 function relevanceTerms(query) {
@@ -2419,7 +2394,7 @@ async function searchSemanticScholar(query, count) {
 async function searchCrossref(query, count) {
   const { text } = await checkedSearchRequest("https://api.crossref.org/works?" + new URLSearchParams({ query, rows: String(count) }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
   const data = JSON.parse(text);
-  return (data.message?.items || []).map((item) => {
+  return paperItems(data.message?.items || []).map((item) => {
     const title = Array.isArray(item.title) ? item.title[0] : item.title;
     const container = Array.isArray(item["container-title"]) ? item["container-title"][0] : "";
     const year = item.published?.["date-parts"]?.[0]?.[0] || item.created?.["date-parts"]?.[0]?.[0] || "";
@@ -2734,9 +2709,13 @@ async function searchQueryCandidates(query, args, intent, count, deadline) {
       const remainingMs = Math.max(0, deadline - Date.now());
       const allowance = remainingProviders > 1 ? Math.min(8000, remainingMs / remainingProviders) : remainingMs;
       const providerDeadline = Math.min(deadline, Date.now() + allowance);
-      const raw = await runWithinDeadline(() => runIntentProvider(intent, provider, query, count), providerDeadline, provider + " for " + JSON.stringify(query));
-      const usable = requiredTerms(raw, args?.required_terms);
-      if (usable.length < raw.length) notes.push(provider + ': excluded ' + (raw.length - usable.length) + ' result(s) missing required_terms; trying remaining sources if needed');
+      const constraints = [...(args?.required_terms || []), ...(args?.allowed_domains || []), ...(args?.blocked_domains || [])];
+      const limit = candidateLimit(count, constraints, providerMeta(provider)?.kind);
+      const raw = await runWithinDeadline(() => runIntentProvider(intent, provider, query, limit), providerDeadline, provider + " for " + JSON.stringify(query));
+      const domainRows = filterDomains(raw, args?.allowed_domains || [], args?.blocked_domains || []);
+      const usable = requiredTerms(domainRows, args?.required_terms);
+      if (domainRows.length < raw.length) notes.push(provider + ': excluded ' + (raw.length - domainRows.length) + ' result(s) outside domain constraints');
+      if (usable.length < domainRows.length) notes.push(provider + ': excluded ' + (domainRows.length - usable.length) + ' result(s) missing required_terms; trying remaining sources if needed');
       const added = addResultBatch(batches, provider, usable);
       notes.push(provider + ": " + raw.length + " result(s)");
       if (usable.length && !added) notes.push(provider + ": results duplicated an earlier provider");

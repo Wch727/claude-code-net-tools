@@ -43,6 +43,7 @@ async function suite(id, script, coverage, mode, timeout = 180000) {
 await suite('protocol-document', 'tests/mcp-regression.mjs', ['person-zh (mock only)', 'long-paper (synthetic PDF only)', 'rate-limit'], 'localhost + mock browser');
 await suite('recovery-evidence-parity', 'tests/p1p2.mjs', ['cooldown recovery', 'verbatim quotes', 'PDF page locations', 'Unicode offsets', 'Node/Python parity'], 'shared fixtures + controlled clock');
 await suite('search-provenance', 'tests/search-quality.mjs', ['AI summaries vs URLs', 'source-less API answers', 'optional literal filters', 'PDF download fallback'], 'local fixtures; no paid API');
+await suite('organic-search-parsing', 'tests/search-pages.mjs', ['organic cards', 'snippets', 'CDATA and namespaces', 'unsafe declarations', 'bounded free candidates'], 'shared HTML/feed fixtures');
 await suite('request-lifecycle', 'tests/safety-regression.mjs', ['network-timeout', 'cancel', 'browser close retry', 'DeepSeek response parsing (mock only)'], 'localhost + mock CLI');
 await suite('owner-watch', 'tests/browser-owner.mjs', ['owner-exit (mock daemon only)'], 'local processes');
 await suite('security-boundaries', 'tests/p0.mjs', ['private addresses', 'redirects', 'write permissions', 'credential storage'], 'localhost + real OS permissions');

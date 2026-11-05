@@ -128,6 +128,8 @@ function cleanEnv(baseUrl, runtime) {
   env.DEEPSEEK_SEARCH_URL = `${baseUrl}/recover`;
   env.MINIMAX_API_KEY = 'fixture-minimax';
   env.MINIMAX_BASE_URL = `${baseUrl}/chat-fixture`;
+  env.KIMI_API_KEY = 'fixture-kimi';
+  env.KIMI_BASE_URL = `${baseUrl}/chat-fixture`;
   env.CLAUDE_NET_COOKIE_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "cookies");
   env.CLAUDE_NET_SESSION_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "sessions");
   env.CLAUDE_NET_CURL = process.platform === "win32" ? "curl.exe" : "curl";
@@ -185,7 +187,7 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assertIncludes(doctor, "Mode: configuration only", `${label} net_doctor`);
     assertIncludes(doctor, "Provider readiness:", `${label} net_doctor`);
     assertIncludes(doctor, "kimi: skipped paid API", `${label} net_doctor`);
-    const status = await client.callTool("search_status", { providers: ["duckduckgo", "arxiv", "kimi", "not_real"] });
+    const status = await client.callTool("search_status", { providers: ["duckduckgo", "arxiv", "brave", "not_real"] });
     assertIncludes(status, "Default scholar order:", `${label} search_status`);
     assertIncludes(status, "group=web", `${label} search_status`);
     assertIncludes(status, "group=scholar", `${label} search_status`);
@@ -314,6 +316,8 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assert.equal(cited.structuredContent.results[0].url, 'https://docs.python.org/3/library/asyncio-task.html#task-groups');
     assertIncludes(cited.structuredContent.results[0].snippet, 'AI-generated summary', label + ' summary provenance');
     assertIncludes(cited.structuredContent.results[0].verification, 'unverified', label + ' URL not automatically trusted');
+    const domainFallback = await client.callToolResult('web_search', { query: 'fixture citations domainfixture', providers: ['kimi', 'minimax', 'deepseek'], allowed_domains: ['docs.python.org'], count: 1, browser: 'never', verify_top: 0 });
+    assert.equal(domainFallback.structuredContent.results[0]?.provider, 'deepseek', label + ' excluded domains must not fill the provider quota before a healthy source');
     const modelLink = await client.callToolResult('web_search', { ...sourceArgs, query: 'fixture model link' });
     assert.equal(modelLink.structuredContent.results[0].source_type, 'model_link');
     const noSources = await client.callToolResult('web_search', { ...sourceArgs, query: 'fixture no links' });
@@ -329,6 +333,11 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assert.ok(Date.now() - slowStart < 4000, label + ' PDF overall budget must be bounded');
 
     const pdfHealth = await client.callTool("pdf_status", {});
+    const constrained = await client.callToolResult('web_search', { query: 'candidatefixture', intent: 'academic', providers: ['arxiv'], required_terms: ['TaskGroup'], count: 1, browser: 'never', verify_top: 0 });
+    assert.equal(constrained.structuredContent.results.length, 1, label + ' constrained search recalls a late free candidate');
+    assert.equal(constrained.structuredContent.results[0].title, 'TaskGroup reference');
+    const domainConstrained = await client.callToolResult('web_search', { query: 'candidatefixture', intent: 'academic', providers: ['arxiv'], allowed_domains: ['docs.python.org'], count: 1, browser: 'never', verify_top: 0 });
+    assert.equal(domainConstrained.structuredContent.results[0]?.title, 'TaskGroup reference', label + ' domain constraints applied before stopping providers');
     if (pdfHealth.includes("Status: available")) {
       const beforeLegacyPdf = hitCounters.pdf;
       const firstPdfPage = await client.callTool("fetch_pdf", { url: `${baseUrl}/paper.pdf`, max_chars: 500 });
@@ -470,9 +479,18 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/recover') {
+    let raw = '';
+    req.on('data', chunk => raw += chunk);
+    req.on('end', () => {
+      if ((JSON.parse(raw).query || '').includes('domainfixture')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ results: [{ title: 'TaskGroup source', url: 'https://docs.python.org/task.html', summary: 'Official source' }] }));
+        return;
+      }
     hitCounters.recovery++;
     if (hitCounters.recovery % 2 === 1) { res.writeHead(429); res.end('Rate limited'); }
     else { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ results: [{ title: 'Recovered fixture', url: `${baseUrl}/page`, summary: 'Recovery fixture source' }] })); }
+    });
     return;
   }
   if (url.pathname === "/paper.pdf") {
@@ -535,6 +553,13 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === "/arxiv") {
     hitCounters.arxiv += 1;
+    if ((url.searchParams.get('search_query') || '').includes('candidatefixture')) {
+      const entries = Array.from({ length: 10 }, (_, i) => `<entry><title>${i === 9 ? 'TaskGroup reference' : 'Generic Python result ' + i}</title><id>${i === 9 ? 'https://docs.python.org/task.html' : 'https://example.org/result/' + i}</id><summary>Source description</summary></entry>`);
+      res.writeHead(200, { 'content-type': 'application/atom+xml' });
+      const count = Math.min(Number(url.searchParams.get('max_results')) || 1, 10);
+      res.end('<feed>' + entries.slice(0, count).join('') + '</feed>');
+      return;
+    }
     res.writeHead(429, { "content-type": "text/plain; charset=utf-8" });
     res.end("Rate Exceeded");
     return;

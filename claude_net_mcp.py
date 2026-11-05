@@ -31,16 +31,16 @@ import network_policy as policy
 from private_storage import private_file
 import provider_health as health
 from document_evidence import CONTRACT, evidence, EVIDENCE_GUIDANCE
-from search_quality import chat_sources, required_terms, REQUIRED_TERMS_SCHEMA, SEARCH_GUIDANCE
+from search_quality import chat_sources, required_terms, paper_items, REQUIRED_TERMS_SCHEMA, SEARCH_GUIDANCE
+from search_pages import parse_search_html, parse_search_feed, candidate_limit
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from typing import Any
 
 SERVER_NAME = "claude-code-net-tools"
-SERVER_VERSION = "0.14.1"
+SERVER_VERSION = "0.14.2"
 MCP_INSTRUCTIONS = (
     "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt. "
     "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall. "
@@ -696,66 +696,12 @@ def _result(title: Any, url: Any, snippet: Any = "", provider: str = "") -> dict
 
 
 def _parse_bing_rss(text: str, count: int, provider: str = "bing_rss") -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError:
-        return results
-    for item in root.findall(".//item"):
-        row = _result(item.findtext("title") or "", item.findtext("link") or "", item.findtext("description") or "", provider)
-        if row["title"] and row["url"].startswith(("http://", "https://")):
-            results.append(row)
-        if len(results) >= count:
-            break
-    return results
-
-
-class DuckDuckGoParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.results: list[dict[str, str]] = []
-        self._active: dict[str, str] | None = None
-        self._text: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_dict = {key: value or "" for key, value in attrs}
-        classes = attrs_dict.get("class", "")
-        if tag == "a" and "result__a" in classes and attrs_dict.get("href"):
-            self._active = {"url": _clean_url(attrs_dict["href"])}
-            self._text = []
-
-    def handle_data(self, data: str) -> None:
-        if self._active is not None:
-            self._text.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self._active is not None:
-            row = _result(" ".join(self._text), self._active["url"], "", "duckduckgo")
-            if row["title"] and row["url"].startswith(("http://", "https://")):
-                self.results.append(row)
-            self._active = None
-            self._text = []
+    return [{**row, "url": _clean_url(row["url"])} for row in parse_search_feed(text, count, provider)]
 
 
 def _parse_generic_html(text: str, count: int, provider: str) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-    patterns = [
-        r"<h[23][^>]*>[\s\S]*?<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>([\s\S]*?)</a>[\s\S]*?</h[23]>",
-        r"<a[^>]+href=[\"'](https?://[^\"']+)[\"'][^>]*>([\s\S]*?)</a>",
-    ]
-    for pattern in patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            row = _result(match.group(2), match.group(1), "", provider)
-            if not row["title"] or len(row["title"]) < 2 or not row["url"].startswith(("http://", "https://")):
-                continue
-            if re.match(r"^(images|videos|maps|news|login|sign in)$", row["title"], flags=re.I):
-                continue
-            results.append(row)
-            if len(results) >= count:
-                return results
-        if results:
-            break
-    return results
+    base = {"bing_html": "https://www.bing.com/", "sogou": "https://www.sogou.com/", "so360": "https://www.so.com/"}.get(provider, "https://www.bing.com/")
+    return [{**row, "url": _clean_url(row["url"])} for row in parse_search_html(text, count, provider, base)]
 
 
 def _relevance_terms(query: str) -> list[str]:
@@ -1041,9 +987,7 @@ def _search_duckduckgo(query: str, count: int) -> list[dict[str, str]]:
         raise RuntimeError("Search HTTP " + str(status))
     text = _decode_body(body, content_type)
     _assert_search_page_usable(text, "duckduckgo")
-    parser = DuckDuckGoParser()
-    parser.feed(text)
-    return parser.results[:count]
+    return [{**row, "url": _clean_url(row["url"])} for row in parse_search_html(text, count, "duckduckgo", "https://html.duckduckgo.com/")]
 
 
 def _search_http_text(url: str, timeout: float = SEARCH_TIMEOUT) -> str:
@@ -2310,7 +2254,7 @@ def _search_crossref(query: str, count: int) -> list[dict[str, str]]:
     _, content_type, body, _, _ = _search_request_url("https://api.crossref.org/works?" + urllib.parse.urlencode({"query": query, "rows": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
     data = json.loads(_decode_body(body, content_type))
     rows = []
-    for item in data.get("message", {}).get("items", []):
+    for item in paper_items(data.get("message", {}).get("items", [])):
         title = (item.get("title") or [""])[0]
         container = (item.get("container-title") or [""])[0]
         year = ((item.get("published") or {}).get("date-parts") or [[""]])[0][0] or ((item.get("created") or {}).get("date-parts") or [[""]])[0][0]
@@ -2672,10 +2616,15 @@ def _search_query_candidates(query: str, arguments: dict[str, Any], intent: str,
             remaining_seconds = max(0.0, deadline - time.time())
             allowance = min(8.0, remaining_seconds / remaining_providers) if remaining_providers > 1 else remaining_seconds
             provider_deadline = min(deadline, time.time() + allowance)
-            raw = _run_with_deadline(lambda p=provider: _run_intent_provider(intent, p, query, count), provider_deadline, provider + " for " + repr(query))
-            usable = required_terms(raw, arguments.get("required_terms"))
-            if len(usable) < len(raw):
-                notes.append(f"{provider}: excluded {len(raw) - len(usable)} result(s) missing required_terms; trying remaining sources if needed")
+            constraints = [*(arguments.get("required_terms") or []), *(arguments.get("allowed_domains") or []), *(arguments.get("blocked_domains") or [])]
+            limit = candidate_limit(count, constraints, (_provider_meta(provider) or {}).get("kind"))
+            raw = _run_with_deadline(lambda p=provider: _run_intent_provider(intent, p, query, limit), provider_deadline, provider + " for " + repr(query))
+            domain_rows = _filter_domains(raw, arguments.get("allowed_domains", []), arguments.get("blocked_domains", []))
+            usable = required_terms(domain_rows, arguments.get("required_terms"))
+            if len(domain_rows) < len(raw):
+                notes.append(f"{provider}: excluded {len(raw) - len(domain_rows)} result(s) outside domain constraints")
+            if len(usable) < len(domain_rows):
+                notes.append(f"{provider}: excluded {len(domain_rows) - len(usable)} result(s) missing required_terms; trying remaining sources if needed")
             added = _add_result_batch(batches, provider, usable)
             notes.append(f"{provider}: {len(raw)} result(s)")
             if usable and not added:

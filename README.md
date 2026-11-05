@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+0.14.2 改进搜索卡片与 RSS 解析，保留摘要，修复免费候选过早截断和域名过滤过晚的问题，并排除 Crossref 补充材料。Node 版升级运行 `npm ci`；Python HTTP 不增加 pip 依赖。实际收益和仍失败的实网题目见[搜索质量记录](docs/search-quality.zh.md)。
+
 0.14.1 修复 Kimi/MiniMax 的来源 URL 标注，新增可选 `required_terms`，并修复 PDF 下载异常无法进入 HTML 备用路径、各阶段重复占用超时预算的问题。参数、限制及测试边界见[修复说明](docs/search-fixes.zh.md)。本项目采用 [MIT](LICENSE)。
 
 0.14 新增：`read_url` 用 `query` 在完整快照中定位段落、用 `quote` 核对引文，返回章节、PDF 物理页和原文位置；搜索源冷却后随下一次请求尝试恢复。两版均支持，默认仍只有三个工具。具体参数见[文档内检索与引用定位](docs/document-search.zh.md)。不会自动重新启用本机 MCP。
