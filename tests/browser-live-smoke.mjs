@@ -107,6 +107,8 @@ async function runRuntime(label, command, args, url) {
   const workDir = path.join(os.tmpdir(), "claude-net-tools-browser-live-" + label + "-" + process.pid);
   const env = {
     ...process.env,
+    CLAUDE_NET_ALLOW_PRIVATE_NETWORK: 'true',
+    CLAUDE_NET_ALLOW_BROWSER: 'true',
     CLAUDE_NET_PROXY: "direct",
     CLAUDE_NET_BROWSER_FALLBACK: "auto",
     CLAUDE_NET_BROWSER_WORK_DIR: workDir,

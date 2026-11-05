@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import claude_net_mcp as server
+server.os.environ['CLAUDE_NET_ALLOW_PRIVATE_NETWORK'] = 'true'
 from runtime import Operation, operation, run_process
 
 context = Operation()

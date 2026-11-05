@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { enabled, resolveURL } from './network-policy.mjs';
 
 export const operation = new AsyncLocalStorage();
 const secrets = new Set();
@@ -90,6 +94,46 @@ export function curlConfig(args) {
   return lines.join("\n") + "\n";
 }
 
-export function runCurl(command, args, options) {
-  return runProcess(command, ["-q", "--config", "-"], { ...options, input: curlConfig(args) });
+export async function runCurl(command, args, options) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'net-http-'));
+  const headerFile = path.join(directory, 'headers');
+  await fs.writeFile(headerFile, '', { mode: 0o600 });
+  const deadline = performance.now() + (options.timeout || 120000);
+  let current = [...args];
+  try {
+    for (let hop = 0; hop <= 5; hop++) {
+      checkOperation();
+      const index = current.length - 1;
+      const { url, addresses } = await resolveURL(current[index]);
+      current[index] = url.href;
+      const proxy = current.indexOf('--proxy');
+      if (proxy >= 0 && !enabled('CLAUDE_NET_TRUST_PROXY')) throw new Error('Proxy routing requires CLAUDE_NET_TRUST_PROXY=true; the proxy is a trusted network boundary');
+      const safe = current.filter(value => value !== '-L');
+      safe.splice(safe.length - 1, 0, '--proto', '=http,https', '--dump-header', headerFile);
+      if (proxy < 0 && addresses.length) {
+        const address = addresses[0].includes(':') ? '[' + addresses[0] + ']' : addresses[0];
+        safe.splice(safe.length - 1, 0, '--resolve', `${url.hostname.replace(/^\[|\]$/g, '')}:${url.port || (url.protocol === 'https:' ? 443 : 80)}:${address}`);
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new Error('time budget exhausted');
+      const output = await runProcess(command, ['-q', '--config', '-'], { ...options, timeout: remaining, input: curlConfig(safe) });
+      const headers = await fs.readFile(headerFile, 'utf8');
+      const blocks = headers.trim().split(/\r?\n\r?\n/);
+      const final = blocks[blocks.length - 1] || '';
+      const status = Number(/^HTTP\/\S+\s+(\d+)/i.exec(final)?.[1]);
+      const location = /^location:\s*(.+)$/im.exec(final)?.[1]?.trim();
+      if (![301, 302, 303, 307, 308].includes(status) || !location) return output;
+      if (hop === 5) throw new Error('Too many HTTP redirects');
+      const next = new URL(location, url);
+      const write = current.includes('--data-raw') || (current.includes('-X') && !['GET', 'HEAD'].includes(current[current.indexOf('-X') + 1]));
+      if (write) throw new Error('Redirects for HTTP writes are blocked; use the final URL explicitly');
+      if (next.origin !== url.origin) {
+        current = current.filter((value, i) => {
+          if (value === '-H' || current[i - 1] === '-H' || value === '--cookie' || current[i - 1] === '--cookie') return false;
+          return true;
+        });
+      }
+      current[current.length - 1] = next.href;
+    }
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 }

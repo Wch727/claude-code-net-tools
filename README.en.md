@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+Private-network access, caller-selected HTTP writes and the built-in browser are disabled by default. Proxies require explicit trust; credential files use owner-only permissions. Read [secure defaults and permissions](docs/security.en.md) before upgrading, then restart the MCP after configuring required grants.
+
 Run `npm run quality` for acceptance reporting. See [Quality Acceptance](docs/quality.en.md) for fixed cases, metrics, and the native-tools + Playwright comparison procedure. Opt into real-browser and public-web checks with `--browser` and `--live`; passing fixtures does not establish better live search quality.
 
 Maintained as an optional fallback. Prefer native Claude Code WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser operations. Enable net-tools only for document snapshots, pagination, custom providers, sessions, or proxy routing.

@@ -2,6 +2,8 @@
 import { operation, runProcess as execFileAsync, runCurl, remember, redact, sanitize, checkOperation } from "./runtime.mjs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { authorizeTool, enabled } from './network-policy.mjs';
+import { privateFile } from './private-storage.mjs';
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
@@ -11,7 +13,7 @@ import readline from "node:readline";
 import { TextDecoder } from "node:util";
 
 const SERVER_NAME = "claude-code-net-tools";
-const SERVER_VERSION = "0.12.4";
+const SERVER_VERSION = "0.13.0";
 const MCP_INSTRUCTIONS = [
   "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt.",
   "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall.",
@@ -28,7 +30,7 @@ const DEFAULT_FETCH_MAX_CHARS = Math.max(500, Math.min(Number(process.env.CLAUDE
 const MAX_OUTPUT_CHARS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_MAX_OUTPUT_CHARS) || 200000, 1000000));
 const DEFAULT_FETCH_BYTES = Math.max(100000, Math.min(Number(process.env.CLAUDE_NET_MAX_FETCH_BYTES) || 1200000, 50000000));
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-const CURL = process.env.CLAUDE_NET_CURL || "curl.exe";
+const CURL = process.env.CLAUDE_NET_CURL || (process.platform === 'win32' ? 'curl.exe' : 'curl');
 const PROVIDER_FAIL_LIMIT = Math.max(1, Math.min(Number(process.env.CLAUDE_NET_PROVIDER_FAIL_LIMIT) || 3, 10));
 const PROVIDER_STATS = new Map();
 const ARXIV_COOLDOWN_MS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_ARXIV_COOLDOWN_MS) || 5000, 60000));
@@ -684,6 +686,7 @@ function cookieHeader(cookies) {
 function ensureUrl(url) {
   url = String(url || "").trim();
   if (!url) throw new Error("url is required");
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^https?:\/\//i.test(url)) throw new Error('Only HTTP(S) URLs are allowed');
   return /^https?:\/\//i.test(url) ? url : `https://${url}`;
 }
 
@@ -695,8 +698,7 @@ function safeCookieJarName(name) {
 async function cookieJarFile(name) {
   if (!name) return "";
   const dir = process.env.CLAUDE_NET_COOKIE_DIR || path.join(os.homedir(), ".claude-code-net-tools", "cookies");
-  await fs.mkdir(dir, { recursive: true });
-  return path.join(dir, `${safeCookieJarName(name)}.txt`);
+  return privateFile(dir, `${safeCookieJarName(name)}.txt`, true);
 }
 
 function sessionName(name) {
@@ -706,7 +708,8 @@ function sessionName(name) {
 }
 
 function sessionCookieJarName(name) {
-  return `session_${sessionName(name)}`;
+  const normalized = sessionName(name);
+  return normalized.length > 64 ? 'session_' + createHash('sha256').update(normalized).digest('hex') : `session_${normalized}`;
 }
 
 function sessionDir() {
@@ -715,8 +718,7 @@ function sessionDir() {
 
 async function sessionFile(name) {
   const dir = sessionDir();
-  await fs.mkdir(dir, { recursive: true });
-  return path.join(dir, `${sessionName(name)}.json`);
+  return privateFile(dir, `${sessionName(name)}.json`);
 }
 
 function mergeCookies(base, extra) {
@@ -738,7 +740,7 @@ async function readSession(name, { optional = false } = {}) {
       headers: normalizeHeaders(data.headers || {}),
       cookies: data.cookies || null,
       referer: sanitizeHeaderValue(data.referer || ""),
-      cookieJar: data.cookieJar || sessionCookieJarName(name),
+      cookieJar: sessionName(name).length > 64 ? sessionCookieJarName(name) : (data.cookieJar || sessionCookieJarName(name)),
     };
   } catch (error) {
     if (optional && error.code === "ENOENT") return null;
@@ -760,7 +762,8 @@ async function writeSession(data) {
     referer: sanitizeHeaderValue(data.referer || ""),
     cookieJar: data.cookieJar || previous?.cookieJar || sessionCookieJarName(name),
   };
-  await fs.writeFile(await sessionFile(name), JSON.stringify(session, null, 2), "utf8");
+  const file = await privateFile(sessionDir(), `${name}.json`, true);
+  await fs.writeFile(file, JSON.stringify(session, null, 2), { encoding: 'utf8', mode: 0o600 });
   await cookieJarFile(session.cookieJar);
   return session;
 }
@@ -1001,6 +1004,7 @@ function parsePlaywrightOutput(stdout) {
 }
 
 async function runPlaywright(args, { parseResult = false, timeout = BROWSER_TIMEOUT } = {}) {
+  if (!enabled('CLAUDE_NET_ALLOW_BROWSER') || !enabled('CLAUDE_NET_ALLOW_PRIVATE_NETWORK')) throw new Error('Built-in browser requires CLAUDE_NET_ALLOW_BROWSER=true and CLAUDE_NET_ALLOW_PRIVATE_NETWORK=true: browser scripts have full network access');
   try {
     await fs.mkdir(BROWSER_WORK_DIR, { recursive: true });
     const invocation = playwrightInvocation();
@@ -3703,6 +3707,7 @@ function sendResult(id, result) { send({ jsonrpc: "2.0", id, result }); }
 function sendError(id, code, message) { send({ jsonrpc: "2.0", id, error: { code, message } }); }
 
 async function callTool(name, args) {
+  authorizeTool(name, args);
   if (name === "web_search") return webSearch(args);
   if (name === "read_url") return readUrl(args);
   if (name === "browser_interact") return browserInteract(args);

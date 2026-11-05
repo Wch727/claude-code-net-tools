@@ -27,6 +27,8 @@ import traceback
 import threading
 import signal
 from runtime import Operation, operation, run_process, submit, remember, redact, sanitize, check_operation
+import network_policy as policy
+from private_storage import private_file
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,7 +37,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 SERVER_NAME = "claude-code-net-tools"
-SERVER_VERSION = "0.12.4"
+SERVER_VERSION = "0.13.0"
 MCP_INSTRUCTIONS = (
     "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt. "
     "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall. "
@@ -343,8 +345,7 @@ def _cookie_jar_path(name: Any) -> str:
     if not name:
         return ""
     root = os.environ.get("CLAUDE_NET_COOKIE_DIR") or os.path.join(os.path.expanduser("~"), ".claude-code-net-tools", "cookies")
-    os.makedirs(root, exist_ok=True)
-    return os.path.join(root, _safe_cookie_jar_name(name) + ".txt")
+    return private_file(root, _safe_cookie_jar_name(name) + ".txt", True)
 
 
 def _session_name(name: Any) -> str:
@@ -355,7 +356,8 @@ def _session_name(name: Any) -> str:
 
 
 def _session_cookie_jar_name(name: Any) -> str:
-    return "session_" + _session_name(name)
+    normalized = _session_name(name)
+    return "session_" + (hashlib.sha256(normalized.encode()).hexdigest() if len(normalized) > 64 else normalized)
 
 
 def _session_dir() -> str:
@@ -364,8 +366,7 @@ def _session_dir() -> str:
 
 def _session_path(name: Any) -> str:
     root = _session_dir()
-    os.makedirs(root, exist_ok=True)
-    return os.path.join(root, _session_name(name) + ".json")
+    return private_file(root, _session_name(name) + ".json")
 
 
 def _merge_cookies(base: Any, extra: Any) -> Any:
@@ -398,7 +399,7 @@ def _read_session(name: Any, optional: bool = False) -> dict[str, Any] | None:
         "headers": _normalize_headers(data.get("headers") or {}),
         "cookies": data.get("cookies"),
         "referer": _sanitize_header_value(data.get("referer") or ""),
-        "cookieJar": data.get("cookieJar") or _session_cookie_jar_name(name),
+        "cookieJar": _session_cookie_jar_name(name) if len(_session_name(name)) > 64 else (data.get("cookieJar") or _session_cookie_jar_name(name)),
     }
 
 
@@ -415,7 +416,7 @@ def _write_session(data: dict[str, Any]) -> dict[str, Any]:
         "referer": _sanitize_header_value(data.get("referer") or ""),
         "cookieJar": data.get("cookieJar") or (previous or {}).get("cookieJar") or _session_cookie_jar_name(name),
     }
-    with open(_session_path(name), "w", encoding="utf-8") as handle:
+    with open(private_file(_session_dir(), _session_name(name) + ".json", True), "w", encoding="utf-8") as handle:
         json.dump(session, handle, ensure_ascii=False, indent=2)
     _cookie_jar_path(session["cookieJar"])
     return session
@@ -538,7 +539,10 @@ def _update_session_referer(arguments: dict[str, Any], final_url: str) -> None:
 
 
 def _opener(proxy: str | None, cookie_jar: Any = "") -> urllib.request.OpenerDirector:
-    handlers = []
+    proxy_host = urllib.parse.urlsplit(proxy).hostname if proxy else None
+    handlers = [policy.HTTPHandler(proxy_host), policy.HTTPSHandler(proxy_host), policy.RedirectHandler()]
+    if proxy and not policy.enabled("CLAUDE_NET_TRUST_PROXY"):
+        raise ValueError("Proxy routing requires CLAUDE_NET_TRUST_PROXY=true; the proxy is a trusted network boundary")
     if proxy:
         handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     else:
@@ -556,6 +560,7 @@ def _opener(proxy: str | None, cookie_jar: Any = "") -> urllib.request.OpenerDir
 
 
 def _request_url(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int = MAX_FETCH_BYTES, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None, cookies: Any = None, cookie_jar: Any = "") -> tuple[str, str, bytes, str, int]:
+    policy.parse_url(url)
     remember({"url": url, "headers": headers, "cookies": cookies})
     payload = dict(url=url, timeout=timeout, max_bytes=max_bytes, method=method, headers=headers,
                    body=base64.b64encode(body).decode("ascii") if body is not None else None,
@@ -573,6 +578,7 @@ def _request_url(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int =
 
 
 def _request_url_impl(url: str, *, timeout: float = DEFAULT_TIMEOUT, max_bytes: int = MAX_FETCH_BYTES, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None, cookies: Any = None, cookie_jar: Any = "") -> tuple[str, str, bytes, str, int]:
+    policy.validate_url(url)
     deadline = time.monotonic() + timeout
     errors: list[str] = []
     final_headers = {
@@ -1045,21 +1051,9 @@ def _search_http_text(url: str, timeout: float = SEARCH_TIMEOUT) -> str:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("time budget exhausted")
-        # curl config on stdin keeps proxy credentials and URLs out of argv.
-        config = ["location", "silent", "show-error", "max-filesize = 1200000",
-                  "max-time = " + str(remaining), "user-agent = " + json.dumps(USER_AGENT),
-                  "url = " + json.dumps(url), 'write-out = "\\n__SEARCH_STATUS__%{http_code}"']
-        config.append("proxy = " + json.dumps(proxy) if proxy else 'noproxy = "*"')
         remember(proxy or "")
         try:
-            response = run_process([command, "-q", "--config", "-"], input=("\n".join(config) + "\n").encode("utf-8"),
-                                   capture_output=True, timeout=remaining, check=True,
-                                   creationflags=HIDDEN_SUBPROCESS_FLAGS)
-            content, marker, status = response.stdout.rpartition(b"\n__SEARCH_STATUS__")
-            if not marker or not status.strip().isdigit():
-                raise RuntimeError("Invalid search HTTP response metadata")
-            if int(status) >= 400:
-                raise RuntimeError("Search HTTP " + status.decode("ascii").strip())
+            content = policy.curl_text(command, url, remaining, proxy, USER_AGENT, run_process, HIDDEN_SUBPROCESS_FLAGS)
             return _decode_body(content, "")
         except (TimeoutError, RuntimeError) as exc:
             errors.append(redact(str(exc)))
@@ -1259,6 +1253,8 @@ def _parse_playwright_output(stdout: str) -> Any:
 
 
 def _run_playwright(args: list[str], parse_result: bool = False, timeout: float = BROWSER_TIMEOUT) -> Any:
+    if not policy.enabled("CLAUDE_NET_ALLOW_BROWSER") or not policy.enabled("CLAUDE_NET_ALLOW_PRIVATE_NETWORK"):
+        raise ValueError("Built-in browser requires CLAUDE_NET_ALLOW_BROWSER=true and CLAUDE_NET_ALLOW_PRIVATE_NETWORK=true: browser scripts have full network access")
     invocation = _playwright_invocation()
     command = [*invocation, *args, "--json"]
     env = os.environ.copy()
@@ -1266,7 +1262,7 @@ def _run_playwright(args: list[str], parse_result: bool = False, timeout: float 
         env["CLAUDE_NET_OWNER_PID"] = str(os.getpid())
         env["CLAUDE_NET_OWNER_CLI"] = invocation[1]
         hook = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser-owner.cjs")
-        env["NODE_OPTIONS"] = env.get("NODE_OPTIONS", "") + " --require " + json.dumps(hook)
+        env["NODE_OPTIONS"] = env.get("NODE_OPTIONS", "") + " --require " + json.dumps(hook, ensure_ascii=False)
     try:
         os.makedirs(BROWSER_WORK_DIR, exist_ok=True)
         completed = run_process(
@@ -3972,6 +3968,7 @@ def _listed_tools() -> list[dict[str, Any]]:
     return [{**tool, "description": "Prefer an existing Playwright MCP for browser work. Use this browser tool only when explicitly requested or that browser integration is unavailable. " + tool["description"]} if tool["name"] == "browser_interact" else tool for tool in selected]
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
+    policy.authorize_tool(name, arguments)
     if name == "web_search":
         return web_search(arguments)
     if name == "read_url":

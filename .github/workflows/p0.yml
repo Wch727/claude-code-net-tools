@@ -1,0 +1,46 @@
+name: P0 Cross-platform Verification
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Install PDF extraction (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - name: Install PDF extraction (macOS)
+        if: runner.os == 'macOS'
+        run: brew install poppler
+      - name: Install PDF extraction (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install poppler -y --no-progress
+          $binary = Get-ChildItem C:\ProgramData\chocolatey -Filter pdftotext.exe -Recurse | Select-Object -First 1
+          if (!$binary) { throw 'pdftotext not found' }
+          $binary.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - run: pdftotext -v
+      - run: npm test
+      - name: Install browser
+        run: npx --no-install playwright install chrome
+      - run: npm run test:browser-live
+      - run: node tests/browser-lifecycle.mjs

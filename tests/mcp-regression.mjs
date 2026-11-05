@@ -106,6 +106,9 @@ class McpClient {
 
 function cleanEnv(baseUrl, runtime) {
   const env = { ...process.env };
+  env.CLAUDE_NET_ALLOW_PRIVATE_NETWORK = 'true';
+  env.CLAUDE_NET_ALLOW_UNSAFE_HTTP = 'true';
+  env.CLAUDE_NET_ALLOW_BROWSER = 'true';
   for (const key of [
     "KIMI_API_KEY", "MOONSHOT_API_KEY", "MINIMAX_API_KEY", "BRAVE_SEARCH_API_KEY",
     "SERPER_API_KEY", "GOOGLE_SERPER_API_KEY", "TAVILY_API_KEY",

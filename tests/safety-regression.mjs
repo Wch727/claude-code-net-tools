@@ -127,7 +127,7 @@ const unrelatedExit = once(unrelated, "exit");
 try {
   for (const [name, command, args] of runtimes) {
     const log = path.join(tmp, name + ".jsonl");
-    const env = { ...process.env, CLAUDE_NET_PROXY: "direct", CLAUDE_NET_BROWSER_FALLBACK: "never",
+    const env = { ...process.env, CLAUDE_NET_ALLOW_PRIVATE_NETWORK: 'true', CLAUDE_NET_ALLOW_UNSAFE_HTTP: 'true', CLAUDE_NET_ALLOW_BROWSER: 'true', CLAUDE_NET_PROXY: "direct", CLAUDE_NET_BROWSER_FALLBACK: "never",
       CLAUDE_NET_PLAYWRIGHT_COMMAND: process.execPath, CLAUDE_NET_PLAYWRIGHT_ARGS: JSON.stringify([path.join(root, "tests/lifecycle-mock.mjs")]),
       CLAUDE_NET_TEST_LOG: log, CLAUDE_NET_ARXIV_API_URL: base + "/slow", CLAUDE_NET_DISABLED_PROVIDERS: "",
       CLAUDE_NET_DEBUG: "1", BRAVE_SEARCH_API_KEY: "environment-secret",

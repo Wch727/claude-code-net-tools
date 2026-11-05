@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+默认禁止内网访问、调用者 HTTP 写操作和内置浏览器。代理路由需要显式信任；Cookie 文件使用当前用户私有权限。升级前请阅读[安全默认值与授权配置](docs/security.zh.md)，按实际需求授权后重启 MCP。
+
 质量验收入口：`npm run quality`。固定题库、报告字段和“原生工具 + Playwright”对照步骤见[质量验收](docs/quality.zh.md)。真实浏览器与联网测试分别通过 `--browser`、`--live` 显式启用；本地模拟通过不等于真实搜索质量提升。
 
 本项目作为按需备用工具维护。普通搜索和网页读取优先使用 Claude Code 原生 WebSearch/WebFetch；浏览器操作优先使用已有 Playwright MCP。只有需要长文档快照、分页续读、特殊搜索源、会话或代理时，再启用 net-tools。
