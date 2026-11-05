@@ -17,6 +17,7 @@ for (const flag of flags) delete process.env[flag];
 assert.equal(isPublicAddress('::ffff:127.0.0.1'), false);
 for (const url of ['http://127.0.0.1/', 'http://2130706433/', 'http://[::1]/', 'http://169.254.169.254/', 'http://10.0.0.1/', 'file:///etc/passwd', 'http://user:pass@example.com/']) await assert.rejects(resolveURL(url));
 await assert.rejects(resolveURL('http://public.test/', async () => [{ address: '127.0.0.1' }]));
+await assert.rejects(resolveURL('http://public.test/', async () => [{ address: '93.184.216.34' }, { address: '::ffff:10.0.0.1' }]));
 const canonical = await resolveURL('http://93.184.216.34\\@127.0.0.1:9/');
 assert.equal(canonical.url.hostname, '93.184.216.34');
 assert.ok(!canonical.url.href.includes('\\'), 'the sink must use canonical URL syntax');

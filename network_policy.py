@@ -149,9 +149,8 @@ def curl_text(command, url, timeout, proxy, user_agent, runner, creationflags):
             except ValueError:
                 literal = None
             if not proxy and not private_host_allowed(target.hostname) and literal is None:
-                address = public_addresses(target.hostname, target.port or (443 if target.scheme == "https" else 80))[0][4][0]
-                if ':' in address:
-                    address = '[' + address + ']'
+                values = dict.fromkeys(row[4][0] for row in public_addresses(target.hostname, target.port or (443 if target.scheme == "https" else 80)))
+                address = ','.join('[' + value + ']' if ':' in value else value for value in values)
                 config.append("resolve = " + json.dumps(f"{target.hostname}:{target.port or (443 if target.scheme == 'https' else 80)}:{address}"))
             fd = os.open(header_file, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
             os.close(fd)

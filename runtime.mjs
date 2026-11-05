@@ -112,7 +112,7 @@ export async function runCurl(command, args, options) {
       const safe = current.filter(value => value !== '-L');
       safe.splice(safe.length - 1, 0, '--proto', '=http,https', '--dump-header', headerFile);
       if (proxy < 0 && addresses.length && !isIP(url.hostname.replace(/^\[|\]$/g, ''))) {
-        const address = addresses[0].includes(':') ? '[' + addresses[0] + ']' : addresses[0];
+        const address = [...new Set(addresses)].map(value => value.includes(':') ? '[' + value + ']' : value).join(',');
         safe.splice(safe.length - 1, 0, '--resolve', `${url.hostname.replace(/^\[|\]$/g, '')}:${url.port || (url.protocol === 'https:' ? 443 : 80)}:${address}`);
       }
       const remaining = deadline - performance.now();
