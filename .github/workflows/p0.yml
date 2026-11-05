@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Fresh install with an isolated fake Claude CLI
+        run: node tests/install-smoke.mjs --install
       - run: npm ci
       - name: Install PDF extraction (Linux)
         if: runner.os == 'Linux'

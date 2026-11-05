@@ -17,7 +17,7 @@ import readline from "node:readline";
 import { TextDecoder } from "node:util";
 
 const SERVER_NAME = "claude-code-net-tools";
-const SERVER_VERSION = "0.14.2";
+const SERVER_VERSION = "0.14.3";
 const MCP_INSTRUCTIONS = [
   "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt.",
   "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall.",

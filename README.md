@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+0.14.3 修复全新安装：Node 必须安装 npm 依赖，注册前离线检查，失败不移除旧注册。新增 30 题搜索失败评测，默认不联网，不增加排序或模型。[安装与评测说明](docs/reliability-0.14.3.zh.md)。
+
 0.14.2 改进搜索卡片与 RSS 解析，保留摘要，修复免费候选过早截断和域名过滤过晚的问题，并排除 Crossref 补充材料。Node 版升级运行 `npm ci`；Python HTTP 不增加 pip 依赖。实际收益和仍失败的实网题目见[搜索质量记录](docs/search-quality.zh.md)。
 
 0.14.1 修复 Kimi/MiniMax 的来源 URL 标注，新增可选 `required_terms`，并修复 PDF 下载异常无法进入 HTML 备用路径、各阶段重复占用超时预算的问题。参数、限制及测试边界见[修复说明](docs/search-fixes.zh.md)。本项目采用 [MIT](LICENSE)。
@@ -72,7 +74,7 @@
 - Node.js 20 或更高：`node -v`
 - curl：`curl --version`，Windows 10/11 通常自带 `curl.exe`
 
-基础搜索和网页读取不需要运行 `npm install`。
+Node 版即使只做基础搜索和网页读取，也必须在仓库目录运行 `npm ci`，安装锁定依赖（包括 `ipaddr.js`、`htmlparser2` 和 `entities`）。安装脚本默认只检查，不自动下载；可用下方显式安装选项。浏览器安装是另外一步。
 
 Python 备用版本需要 Python 3.10 或更高：`python --version`。它只使用标准库，也不需要 `pip install`。Python 标准库只支持 HTTP(S) 代理；SOCKS 代理请用 Node/curl 版本。
 
@@ -86,7 +88,7 @@ Python 备用版本需要 Python 3.10 或更高：`python --version`。它只使
 ```powershell
 git clone https://github.com/Wch727/claude-code-net-tools.git
 cd claude-code-net-tools
-.\scripts\install-claude-code.ps1 -Scope user
+.\scripts\install-claude-code.ps1 -Scope user -Runtime node -InstallDependencies
 ```
 
 macOS/Linux：
@@ -94,10 +96,12 @@ macOS/Linux：
 ```bash
 git clone https://github.com/Wch727/claude-code-net-tools.git
 cd claude-code-net-tools
-./scripts/install-claude-code.sh --scope user
+./scripts/install-claude-code.sh --scope user --runtime node --install-dependencies
 ```
 
 `user` 表示所有项目可用；只给当前项目使用时改成 `local`。仓库移动、配置变化或升级后，加 `-Force`（macOS/Linux 为 `--force`）重新注册。
+
+已经运行 `npm ci` 时省略 `-InstallDependencies` / `--install-dependencies`。脚本在注册前检查运行时版本、Node 核心依赖、curl 和 MCP 离线启动；失败时不移除旧注册，`-Force` 也不例外。显式安装选项需要联网访问 npm，但不会安装浏览器或调用模型。选 Python 时使用 `-Runtime python` / `--runtime python`，不要加 Node 安装选项；其普通 HTTP 功能不需要 npm/pip。检查不等于真实网络连通或浏览器可用，详见[安装与评测记录](docs/reliability-0.14.3.zh.md)。
 
 Windows 安装脚本会尽量使用无窗口启动器，避免每次 MCP 调用闪出命令行窗口；需要看启动错误时加 `-ShowConsole`。
 

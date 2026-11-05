@@ -11,6 +11,7 @@ param(
   [switch]$BrowserHeaded,
   [switch]$Python,
   [switch]$ShowConsole,
+  [switch]$InstallDependencies,
   [switch]$Force
 )
 
@@ -75,6 +76,23 @@ if (-not (Test-Path $Entry)) {
   throw "MCP entry file not found: $Entry"
 }
 
+if ($Runtime -eq "node") {
+  & $Command (Join-Path $PSScriptRoot "check-install.mjs") --runtime-only
+  if ($LASTEXITCODE -ne 0) { throw "Node runtime check failed. Registration was not changed." }
+  if ($InstallDependencies) {
+    $Npm = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+    if (-not $Npm) { $Npm = Get-Command "npm" -ErrorAction SilentlyContinue }
+    if (-not $Npm) { throw "npm was not found. Install npm or run npm ci manually. Registration was not changed." }
+    & $Npm.Source --prefix $Root ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed. Registration was not changed." }
+  }
+  & $Command (Join-Path $PSScriptRoot "check-install.mjs")
+} else {
+  if ($InstallDependencies) { throw "-InstallDependencies is for Node; Python HTTP needs no pip/npm packages." }
+  & $Command (Join-Path $PSScriptRoot "check-install.py")
+}
+if ($LASTEXITCODE -ne 0) { throw "MCP preflight failed. Registration was not changed." }
+
 if ($Force) {
   Write-Host "Removing existing Claude Code MCP server '$Name' if present..."
   & claude mcp remove $Name -s $Scope 2>$null | Out-Null
@@ -96,8 +114,8 @@ if ($envArgs.Count -gt 0) {
 $argsList += @($Command) + $RuntimeArgs
 
 Write-Host "Installing Claude Code MCP server '$Name' in $Scope scope with $Runtime runtime..."
-Write-Host "claude $($argsList -join ' ')"
 & claude @argsList
+if ($LASTEXITCODE -ne 0) { throw "Claude Code MCP registration failed (exit $LASTEXITCODE)." }
 
 Write-Host ""
-Write-Host "Done. In Claude Code, try: Use net-tools net_doctor live=true query='Claude Code MCP'."
+Write-Host "Done. Restart Claude Code and start a new session. Registration is not a live-network test."

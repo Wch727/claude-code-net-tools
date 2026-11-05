@@ -40,6 +40,8 @@ async function suite(id, script, coverage, mode, timeout = 180000) {
   report.suites.push(row);
   console.log(`${id}: ${row.status}${skipped ? ' (inspect skipped coverage)' : ''} ${row.elapsed_ms}ms`);
 }
+await suite('installation', 'tests/install-smoke.mjs', ['fresh checkout', 'missing dependencies', 'registration failure'], 'offline + fake Claude CLI');
+await suite('search-diagnostics', 'tests/search-diagnostics.mjs', ['failure stages', '30-case dataset', 'optional source reads'], 'localhost + fixtures');
 await suite('protocol-document', 'tests/mcp-regression.mjs', ['person-zh (mock only)', 'long-paper (synthetic PDF only)', 'rate-limit'], 'localhost + mock browser');
 await suite('recovery-evidence-parity', 'tests/p1p2.mjs', ['cooldown recovery', 'verbatim quotes', 'PDF page locations', 'Unicode offsets', 'Node/Python parity'], 'shared fixtures + controlled clock');
 await suite('search-provenance', 'tests/search-quality.mjs', ['AI summaries vs URLs', 'source-less API answers', 'optional literal filters', 'PDF download fallback'], 'local fixtures; no paid API');

@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+0.14.3 fixes fresh installation: Node needs npm dependencies; offline preflight runs before registration and preserves old registrations on check failure. Adds a 30-case search-failure baseline, offline by default, without new ranking/model logic. [Installation and evaluation](docs/reliability-0.14.3.en.md).
+
 0.14.2 preserves search snippets, improves card/feed parsing, fixes premature free-candidate truncation and late domain filtering, and excludes Crossref supplementary components. Run `npm ci` when upgrading Node; Python HTTP adds no pip dependency. See [search quality observations](docs/search-quality.en.md), including live failures.
 
 0.14.1 fixes Kimi/MiniMax source URL attribution, adds optional `required_terms`, and fixes PDF download failures bypassing HTML fallback and stages consuming separate timeout budgets. See [fix details and verification limits](docs/search-fixes.en.md). Licensed under [MIT](LICENSE).
@@ -72,7 +74,7 @@ Recommended Node build:
 - Node.js 20 or newer: `node -v`
 - curl: `curl --version`; Windows 10/11 normally includes `curl.exe`
 
-Basic search and HTTP reading do not require `npm install`.
+Even basic Node search and HTTP reading require `npm ci` in the repository to install pinned dependencies, including `ipaddr.js`, `htmlparser2`, and `entities`. The installer checks only by default; use the explicit installation option below to download packages. Browser installation is separate.
 
 The Python fallback requires Python 3.10 or newer and uses only the standard library, so it does not require `pip install`. Python supports HTTP(S) proxies; use the Node/curl build for SOCKS proxies.
 
@@ -86,7 +88,7 @@ Optional dependencies:
 ```powershell
 git clone https://github.com/Wch727/claude-code-net-tools.git
 cd claude-code-net-tools
-.\scripts\install-claude-code.ps1 -Scope user
+.\scripts\install-claude-code.ps1 -Scope user -Runtime node -InstallDependencies
 ```
 
 macOS/Linux:
@@ -94,12 +96,14 @@ macOS/Linux:
 ```bash
 git clone https://github.com/Wch727/claude-code-net-tools.git
 cd claude-code-net-tools
-./scripts/install-claude-code.sh --scope user
+./scripts/install-claude-code.sh --scope user --runtime node --install-dependencies
 ```
 
 Use `user` for every project or `local` for only the current project. Add `-Force` (`--force` on macOS/Linux) after moving the repository, changing settings, or upgrading.
 
 On Windows, the installer prefers a windowless launcher so MCP calls do not flash a console. Add `-ShowConsole` when diagnosing startup errors.
+
+Omit `-InstallDependencies` / `--install-dependencies` after running `npm ci`. Before registration, the scripts check runtime versions, Node core dependencies, curl and offline MCP startup. Failed checks do not remove existing registrations, even with `-Force` / `--force`. Explicit dependency installation uses npm networking, not a model or browser. For Python, use `-Runtime python` / `--runtime python` without the Node installation option; ordinary HTTP needs no npm/pip packages. Preflight does not establish live-network or browser availability. See [installation and evaluation notes](docs/reliability-0.14.3.en.md).
 
 ### 3. Verify and Restart
 

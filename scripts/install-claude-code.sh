@@ -10,6 +10,7 @@ BROWSER=""
 BROWSER_PROFILE=""
 BROWSER_HEADED="0"
 FORCE="0"
+INSTALL_DEPENDENCIES="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,9 +24,10 @@ while [[ $# -gt 0 ]]; do
     --browser-headed) BROWSER_HEADED="1"; shift ;;
     --python) RUNTIME="python"; shift ;;
     --force) FORCE="1"; shift ;;
+    --install-dependencies) INSTALL_DEPENDENCIES="1"; shift ;;
     -h|--help)
       cat <<'HELP'
-Usage: scripts/install-claude-code.sh [--name net-tools] [--scope local|user|project] [--runtime auto|node|python] [--proxy URL|direct] [--providers LIST] [--browser chrome|msedge|firefox|webkit] [--browser-profile DIR] [--browser-headed] [--force]
+Usage: scripts/install-claude-code.sh [--name net-tools] [--scope local|user|project] [--runtime auto|node|python] [--install-dependencies] [--proxy URL|direct] [--providers LIST] [--browser chrome|msedge|firefox|webkit] [--browser-profile DIR] [--browser-headed] [--force]
 
 Examples:
   scripts/install-claude-code.sh
@@ -92,6 +94,18 @@ fi
 
 [[ -f "$entry" ]] || { echo "MCP entry file not found: $entry" >&2; exit 1; }
 
+if [[ "$RUNTIME" == "node" ]]; then
+  "$cmd" "$ROOT/scripts/check-install.mjs" --runtime-only
+  if [[ "$INSTALL_DEPENDENCIES" == "1" ]]; then
+    command -v npm >/dev/null 2>&1 || { echo "npm was not found; registration was not changed." >&2; exit 1; }
+    npm --prefix "$ROOT" ci
+  fi
+  "$cmd" "$ROOT/scripts/check-install.mjs"
+else
+  [[ "$INSTALL_DEPENDENCIES" == "0" ]] || { echo "--install-dependencies is for Node; Python HTTP needs no pip/npm packages." >&2; exit 2; }
+  "$cmd" "$ROOT/scripts/check-install.py"
+fi
+
 if [[ "$FORCE" == "1" ]]; then
   echo "Removing existing Claude Code MCP server '$NAME' if present..."
   claude mcp remove "$NAME" -s "$SCOPE" >/dev/null 2>&1 || true
@@ -100,8 +114,7 @@ fi
 args+=("$cmd" "$entry")
 
 echo "Installing Claude Code MCP server '$NAME' in $SCOPE scope with $RUNTIME runtime..."
-printf 'claude'; printf ' %q' "${args[@]}"; printf '\n'
 claude "${args[@]}"
 
 echo
-echo "Done. In Claude Code, try: Use net-tools net_doctor live=true query='Claude Code MCP'."
+echo "Done. Restart Claude Code and start a new session. Registration is not a live-network test."

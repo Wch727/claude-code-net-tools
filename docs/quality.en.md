@@ -1,5 +1,7 @@
 # Quality Acceptance
 
+0.14.3 adds a separate [30-case search failure baseline](reliability-0.14.3.en.md) for parsed candidates, exclusions, provider errors and original-page read failures. The original eight acceptance scenarios remain separate; transport success is not search accuracy.
+
 [中文](quality.zh.md) | [Fixed cases](../tests/quality/cases.json)
 
 Maintain this project as an optional fallback. Changes should demonstrate a useful improvement: completing a task when native tools fail, reducing document context, or making cancellation and shutdown reliable.
