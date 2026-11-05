@@ -21,6 +21,8 @@ function alive(pid) { try { process.kill(pid, 0); return true; } catch { return 
 
 class Client {
   constructor(command, args, env) {
+    this.label = path.basename(args.at(-1) || command);
+    this.log = env.CLAUDE_NET_TEST_LOG;
     this.responses = new Map();
     this.id = 0;
     this.output = "";
@@ -40,6 +42,7 @@ class Client {
     this.child.stderr.on("data", data => { this.output += data; });
   }
   send(method, params = {}, id = ++this.id) {
+    this.lastRequest = params.name || method;
     this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...(id === null ? {} : { id }), method, params }) + "\n");
     return id;
   }
@@ -52,7 +55,12 @@ class Client {
     this.child.stdin.end();
     let timer;
     try {
-      await Promise.race([this.exited, new Promise((_, reject) => { timer = setTimeout(() => { this.child.kill(); reject(new Error("shutdown exceeded cleanup budget")); }, 15000); })]);
+      await Promise.race([this.exited, new Promise((_, reject) => { timer = setTimeout(() => {
+        let actions = [];
+        try { actions = readFileSync(this.log, 'utf8').trim().split('\n').map(JSON.parse).slice(-4).map(({ action, session, pid }) => ({ action, session, pid })); } catch {}
+        this.child.kill();
+        reject(new Error(this.label + ' shutdown exceeded cleanup budget; last request=' + redact(this.lastRequest) + '; owned actions=' + JSON.stringify(actions)));
+      }, 15000); })]);
     } finally { clearTimeout(timer); }
   }
 }
@@ -135,6 +143,7 @@ try {
       CLAUDE_NET_DEBUG: "1", BRAVE_SEARCH_API_KEY: "environment-secret",
       DEEPSEEK_API_KEY: 'fixture-deepseek', DEEPSEEK_SEARCH_URL: base + '/deepseek', CLAUDE_NET_SEARCH_PROVIDERS: 'deepseek' };
     const client = new Client(command, args, env);
+    let primaryFailure;
     const entries = () => { try { return readFileSync(log, "utf8").trim().split("\n").map(JSON.parse); } catch { return []; } };
     try {
       const init = await client.response(client.send('initialize'));
@@ -199,7 +208,11 @@ try {
       await client.call("search_status", {});
       assert.ok(!client.responses.has(browserId));
       assert.ok(alive(unrelated.pid), "unrelated process survived");
-    } finally { await client.close(); }
+    } catch (error) { primaryFailure = error; throw error; }
+    finally {
+      try { await client.close(); }
+      catch (error) { if (primaryFailure) throw new AggregateError([primaryFailure, error], 'Test request and cleanup both failed'); throw error; }
+    }
     assert.equal(entries().filter(row => row.session.endsWith("-partial") && row.action === "close").length, 2, name + " shutdown retries retained failed close");
     assert.equal(entries().filter(row => row.session.endsWith("-retry") && row.action === "close").length, 2, name + " successful close removed registration");
     assert.ok(alive(unrelated.pid));

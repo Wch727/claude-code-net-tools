@@ -12,6 +12,9 @@ _void = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'me
 class _Tree(HTMLParser):
     def __init__(self, source, xml=False):
         super().__init__(convert_charrefs=True)
+        if xml:
+            # RSS titles are XML text, not HTML RCDATA (Python 3.14+).
+            self.RCDATA_CONTENT_ELEMENTS = ()
         if len(source) > 2000000:
             raise ValueError('Search page exceeds parser input limit')
         self.root = {'tag': '', 'attrs': {}, 'children': [], 'parent': None}
@@ -127,7 +130,8 @@ def parse_search_feed(source, limit, provider='bing_rss'):
             return next((node for node in item['children'] if node['tag'] == name), {'tag': '', 'children': []})
         def plain(node):
             return _text(_Tree(html.unescape(_text(node))).root)
-        title, url = plain(field('title')), _address(_text(field('link')))
+        title = re.sub(r'\s+', ' ', html.unescape(_text(field('title')))).strip()
+        url = _address(_text(field('link')))
         if title and url:
             rows.append({'title': title, 'url': url, 'snippet': plain(field('description')), 'provider': provider})
         if len(rows) >= limit:

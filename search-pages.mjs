@@ -83,7 +83,8 @@ export function parseSearchFeed(source, limit, provider = 'bing_rss') {
   for (const item of nodes.filter(node => tag(node) === 'item')) {
     const child = name => (item.children || []).find(node => tag(node) === name);
     const plain = node => text(parseDocument(decodeHTML(text(node || {})), { decodeEntities: true }));
-    const title = plain(child('title')), url = address(text(child('link') || {}));
+    const title = decodeHTML(text(child('title') || {})).replace(/\s+/g, ' ').trim();
+    const url = address(text(child('link') || {}));
     if (title && url) rows.push({ title, url, snippet: plain(child('description')), provider });
     if (rows.length >= limit) break;
   }
