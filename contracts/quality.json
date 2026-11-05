@@ -1,0 +1,19 @@
+{
+  "provider_recovery": { "failure_limit": 3, "cooldown_ms": 60000, "maximum_cooldown_ms": 300000 },
+  "read_properties": {
+    "query": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Find literal text in a document snapshot (ASCII case-insensitive). Returns bounded excerpts, not a model-generated answer. Reuse document_id to avoid downloading again." },
+    "quote": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "Check exact, case-sensitive text presence in the extracted snapshot. This does not verify factual truth, publisher identity or independent corroboration." },
+    "context_chars": { "type": "integer", "minimum": 0, "maximum": 1000, "default": 180 },
+    "max_matches": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+    "match_offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Unicode code-point position for continuing document matches. Use next_match_offset from a previous find/quote result." }
+  },
+  "document_cases": [
+    { "id": "heading", "document": { "id": "a", "kind": "page", "final_url": "https://example.org/a", "content": "Overview\nIntroduction\n2 Results\nA needle in the results." }, "arguments": { "query": "NEEDLE" }, "expected_count": 1, "expected_section": "2 Results" },
+    { "id": "pdf-page", "document": { "id": "p", "kind": "pdf", "final_url": "https://example.org/p.pdf", "content": "Abstract\nFirst page\fConclusion\nThe needle is here.\f" }, "arguments": { "quote": "needle" }, "expected_count": 1, "expected_page": 2 },
+    { "id": "missing", "document": { "id": "m", "kind": "page", "content": "No such sentence." }, "arguments": { "quote": "made up quote" }, "expected_count": 0 },
+    { "id": "unicode", "document": { "id": "u", "kind": "page", "content": "Introduction\n\ud83d\ude00 \u4e2d\u6587\u8d44\u6599\u4e2d\u5305\u542b\u7cbe\u786e\u8bc1\u636e\u3002" }, "arguments": { "quote": "\u7cbe\u786e\u8bc1\u636e" }, "expected_count": 1 },
+    { "id": "casefold-offset", "document": { "id": "i", "kind": "page", "content": "\u0130 and NEEDLE" }, "arguments": { "query": "needle" }, "expected_count": 1 },
+    { "id": "section-anchor", "document": { "id": "h", "kind": "page", "final_url": "https://example.org/a", "content": "Custom Heading\nneedle", "sections": [{ "start": 0, "title": "Custom Heading", "anchor": "custom" }] }, "arguments": { "query": "needle" }, "expected_count": 1, "expected_section": "Custom Heading" },
+    { "id": "within-heading", "document": { "id": "w", "kind": "pdf", "content": "6.3 Previous Section\nOld text\f7   Conclusion\nNext text\f" }, "arguments": { "query": "Conclusion" }, "expected_count": 1, "expected_section": "7   Conclusion", "expected_page": 2 }
+  ]
+}

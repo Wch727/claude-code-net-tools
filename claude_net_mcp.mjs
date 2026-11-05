@@ -4,6 +4,8 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { authorizeTool, enabled } from './network-policy.mjs';
 import { privateFile } from './private-storage.mjs';
+import * as health from './provider-health.mjs';
+import { contract, evidence, EVIDENCE_GUIDANCE } from './document-evidence.mjs';
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
@@ -13,7 +15,7 @@ import readline from "node:readline";
 import { TextDecoder } from "node:util";
 
 const SERVER_NAME = "claude-code-net-tools";
-const SERVER_VERSION = "0.13.0";
+const SERVER_VERSION = "0.14.0";
 const MCP_INSTRUCTIONS = [
   "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt.",
   "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall.",
@@ -31,7 +33,7 @@ const MAX_OUTPUT_CHARS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_M
 const DEFAULT_FETCH_BYTES = Math.max(100000, Math.min(Number(process.env.CLAUDE_NET_MAX_FETCH_BYTES) || 1200000, 50000000));
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const CURL = process.env.CLAUDE_NET_CURL || (process.platform === 'win32' ? 'curl.exe' : 'curl');
-const PROVIDER_FAIL_LIMIT = Math.max(1, Math.min(Number(process.env.CLAUDE_NET_PROVIDER_FAIL_LIMIT) || 3, 10));
+const PROVIDER_FAIL_LIMIT = health.FAILURE_LIMIT;
 const PROVIDER_STATS = new Map();
 const ARXIV_COOLDOWN_MS = Math.max(1000, Math.min(Number(process.env.CLAUDE_NET_ARXIV_COOLDOWN_MS) || 5000, 60000));
 const ARXIV_API_URL = process.env.CLAUDE_NET_ARXIV_API_URL || "https://export.arxiv.org/api/query";
@@ -1966,7 +1968,7 @@ async function searchBrave(query, count) {
   const key = process.env.BRAVE_SEARCH_API_KEY || "";
   if (!key) return [];
   const url = `https://api.search.brave.com/res/v1/web/search?${new URLSearchParams({ q: query, count: String(Math.min(count, 20)), spellcheck: "1" })}`;
-  const { text } = await curlRequest(url, { headers: { Accept: "application/json", "X-Subscription-Token": key }, timeout: 12 });
+  const { text } = await checkedSearchRequest(url, { headers: { Accept: "application/json", "X-Subscription-Token": key }, timeout: 12 });
   const data = JSON.parse(text);
   return (data.web?.results || []).map((item) => result(item.title, item.url, item.description, "brave"));
 }
@@ -1974,7 +1976,7 @@ async function searchBrave(query, count) {
 async function searchSerper(query, count) {
   const key = process.env.SERPER_API_KEY || process.env.GOOGLE_SERPER_API_KEY || "";
   if (!key) return [];
-  const { text } = await curlRequest("https://google.serper.dev/search", { method: "POST", headers: { "Content-Type": "application/json", "X-API-KEY": key }, body: JSON.stringify({ q: query, num: count }), timeout: 12 });
+  const { text } = await checkedSearchRequest("https://google.serper.dev/search", { method: "POST", headers: { "Content-Type": "application/json", "X-API-KEY": key }, body: JSON.stringify({ q: query, num: count }), timeout: 12 });
   const data = JSON.parse(text);
   return (data.organic || []).map((item) => result(item.title, item.link, item.snippet, "serper"));
 }
@@ -1996,7 +1998,7 @@ async function searchDeepSeek(query, count) {
 async function searchTavily(query, count) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return [];
-  const { text } = await curlRequest("https://api.tavily.com/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: key, query, max_results: count, include_answer: false }), timeout: 20 });
+  const { text } = await checkedSearchRequest("https://api.tavily.com/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: key, query, max_results: count, include_answer: false }), timeout: 20 });
   const data = JSON.parse(text);
   return (data.results || []).map((item) => result(item.title, item.url, item.content, "tavily"));
 }
@@ -2017,7 +2019,7 @@ async function searchChatWeb(provider, query, count) {
     tools: [{ type: "builtin_function", function: { name: toolName } }],
     temperature: 0.2,
   };
-  const { text } = await curlRequest(`${base}/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body: JSON.stringify(payload), timeout: 45, maxBytes: 1200000 });
+  const { text } = await checkedSearchRequest(`${base}/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body: JSON.stringify(payload), timeout: 45, maxBytes: 1200000 });
   const data = JSON.parse(text);
   const content = data.choices?.[0]?.message?.content || "";
   if (!content) return [];
@@ -2031,33 +2033,45 @@ function assertSearchPageUsable(text, provider) {
   throw new Error(provider + ": anti-bot/CAPTCHA page returned instead of search results");
 }
 
+async function checkedSearchRequest(url, options) {
+  const response = await curlRequest(url, options);
+  if (!httpStatusOk(response.status)) throw new Error('Search HTTP ' + response.status);
+  return response;
+}
+
+async function searchHttpText(url, timeout) {
+  const response = await checkedSearchRequest(url, { timeout });
+  return response.text;
+}
+
 async function searchDuckDuckGo(query, count) {
-  const { text } = await curlRequest(`https://html.duckduckgo.com/html/?${new URLSearchParams({ q: query })}`, { timeout: 15 });
+  const text = await searchHttpText(`https://html.duckduckgo.com/html/?${new URLSearchParams({ q: query })}`, 15);
   assertSearchPageUsable(text, "duckduckgo");
   return parseDuckDuckGo(text, count);
 }
 
 async function searchBingRss(query, count) {
   const params = isCjk(query) ? { format: "rss", q: query, setlang: "zh-CN", cc: "CN", mkt: "zh-CN" } : { format: "rss", q: query, setlang: "en-US", cc: "US" };
-  const { text } = await curlRequest(`https://www.bing.com/search?${new URLSearchParams(params)}`, { timeout: 12 });
+  const text = await searchHttpText(`https://www.bing.com/search?${new URLSearchParams(params)}`, 12);
+  assertSearchPageUsable(text, "bing_rss");
   return parseBingRss(text, count, "bing_rss");
 }
 
 async function searchBingHtml(query, count) {
   const params = isCjk(query) ? { q: query, setlang: "zh-CN", cc: "CN", mkt: "zh-CN" } : { q: query };
-  const { text } = await curlRequest(`https://www.bing.com/search?${new URLSearchParams(params)}`, { timeout: 12 });
+  const text = await searchHttpText(`https://www.bing.com/search?${new URLSearchParams(params)}`, 12);
   assertSearchPageUsable(text, "bing_html");
   return parseGenericHtml(text, count, "bing_html");
 }
 
 async function searchSogou(query, count) {
-  const { text } = await curlRequest(`https://www.sogou.com/web?${new URLSearchParams({ query })}`, { timeout: 15 });
+  const text = await searchHttpText(`https://www.sogou.com/web?${new URLSearchParams({ query })}`, 15);
   assertSearchPageUsable(text, "sogou");
   return parseGenericHtml(text, count, "sogou");
 }
 
 async function searchSo360(query, count) {
-  const { text } = await curlRequest(`https://www.so.com/s?${new URLSearchParams({ q: query })}`, { timeout: 15 });
+  const text = await searchHttpText(`https://www.so.com/s?${new URLSearchParams({ q: query })}`, 15);
   assertSearchPageUsable(text, "so360");
   return parseGenericHtml(text, count, "so360");
 }
@@ -2127,6 +2141,7 @@ function recordProvider(provider, ok, elapsedMs, count = 0, error = "") {
   stats.lastMs = elapsedMs;
   stats.lastCount = count;
   stats.lastAt = new Date().toISOString();
+  health.complete(stats, ok, String(error));
 }
 
 function baseProviderOrder(query, override) {
@@ -2153,8 +2168,7 @@ function providerOrder(query, override) {
   return dedupeProviders(baseProviderOrder(query, override));
 }
 
-function activeProviderOrder(query, override, notes = [], options = {}) {
-  const explicit = Array.isArray(override) && override.length;
+function activeProviderOrder(query, override, notes = []) {
   const out = [];
   for (const provider of providerOrder(query, override)) {
     const availability = providerAvailability(provider, "web");
@@ -2163,8 +2177,8 @@ function activeProviderOrder(query, override, notes = [], options = {}) {
       continue;
     }
     const stats = providerStats(provider);
-    if (!explicit && !options.ignoreFailureLimit && stats.consecutiveFailures >= PROVIDER_FAIL_LIMIT) {
-      notes.push(provider + ": skipped after " + stats.consecutiveFailures + " consecutive failure(s); run search_status live=true to refresh");
+    if (!health.ready(stats)) {
+      notes.push(provider + ': ' + health.reason(stats));
       continue;
     }
     out.push(provider);
@@ -2189,6 +2203,7 @@ async function runProvider(provider, query, count) {
 }
 
 async function runProviderTracked(provider, query, count) {
+  health.claim(providerStats(provider));
   const started = Date.now();
   try {
     const rows = await runProvider(provider, query, count);
@@ -2201,6 +2216,7 @@ async function runProviderTracked(provider, query, count) {
 }
 
 async function runScholarProviderTracked(provider, query, count) {
+  health.claim(providerStats(provider));
   const started = Date.now();
   try {
     const rows = await scholarProvider(provider, query, count);
@@ -2269,6 +2285,9 @@ async function searchStatus(args = {}) {
         "success=" + stats.success,
         "failure=" + stats.failure,
         "consecutiveFailures=" + stats.consecutiveFailures,
+        "recovery=" + (health.ready(stats) ? stats.retryAt ? "probe-ready" : "ready" : "cooldown/probing"),
+        "retryAt=" + (stats.retryAt || 0),
+        "failureKind=" + (stats.failureKind || "none"),
       ];
       if (liveNote) pieces.push(liveNote);
       if (meta.description) pieces.push("description=" + meta.description);
@@ -2387,7 +2406,7 @@ async function netDoctor(args = {}) {
 }
 async function searchSemanticScholar(query, count) {
   const fields = "title,url,abstract,year,venue,authors,externalIds,openAccessPdf";
-  const { text } = await curlRequest("https://api.semanticscholar.org/graph/v1/paper/search?" + new URLSearchParams({ query, limit: String(count), fields }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
+  const { text } = await checkedSearchRequest("https://api.semanticscholar.org/graph/v1/paper/search?" + new URLSearchParams({ query, limit: String(count), fields }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
   const data = JSON.parse(text);
   return (data.data || []).map((item) => {
     const arxiv = item.externalIds?.ArXiv ? "https://arxiv.org/abs/" + item.externalIds.ArXiv : "";
@@ -2399,7 +2418,7 @@ async function searchSemanticScholar(query, count) {
 }
 
 async function searchCrossref(query, count) {
-  const { text } = await curlRequest("https://api.crossref.org/works?" + new URLSearchParams({ query, rows: String(count) }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
+  const { text } = await checkedSearchRequest("https://api.crossref.org/works?" + new URLSearchParams({ query, rows: String(count) }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
   const data = JSON.parse(text);
   return (data.message?.items || []).map((item) => {
     const title = Array.isArray(item.title) ? item.title[0] : item.title;
@@ -2514,7 +2533,7 @@ async function scholarSearch(args) {
   return formatResultRows("Scholar results for: " + query, rankScholarRows(rows, query).slice(0, count), notes);
 }
 async function searchNpmPackages(query, count) {
-  const { text } = await curlRequest("https://registry.npmjs.org/-/v1/search?" + new URLSearchParams({ text: query, size: String(count) }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
+  const { text } = await checkedSearchRequest("https://registry.npmjs.org/-/v1/search?" + new URLSearchParams({ text: query, size: String(count) }), { headers: { Accept: "application/json" }, timeout: 15, maxBytes: 1200000 });
   const data = JSON.parse(text);
   return (data.objects || []).map((item) => {
     const pkg = item.package || {};
@@ -2524,7 +2543,7 @@ async function searchNpmPackages(query, count) {
 }
 
 async function searchGithubRepos(query, count) {
-  const { text } = await curlRequest("https://api.github.com/search/repositories?" + new URLSearchParams({ q: query, per_page: String(count) }), { headers: { Accept: "application/vnd.github+json" }, timeout: 15, maxBytes: 1200000 });
+  const { text } = await checkedSearchRequest("https://api.github.com/search/repositories?" + new URLSearchParams({ q: query, per_page: String(count) }), { headers: { Accept: "application/vnd.github+json" }, timeout: 15, maxBytes: 1200000 });
   const data = JSON.parse(text);
   return (data.items || []).map((item) => result(item.full_name, item.html_url, [item.description, (item.stargazers_count || 0) + " stars", item.language].filter(Boolean).join(" | "), "github"));
 }
@@ -2547,13 +2566,14 @@ async function searchPypiPackages(query, count) {
   const rows = [];
   if (/^[A-Za-z0-9_.-]+$/.test(query)) {
     try {
-      const { text } = await curlRequest("https://pypi.org/pypi/" + encodeURIComponent(query) + "/json", { headers: { Accept: "application/json" }, timeout: 12, maxBytes: 1200000 });
+      const { text } = await checkedSearchRequest("https://pypi.org/pypi/" + encodeURIComponent(query) + "/json", { headers: { Accept: "application/json" }, timeout: 12, maxBytes: 1200000 });
       const data = JSON.parse(text);
       rows.push(result((data.info?.name || query) + " " + (data.info?.version || ""), data.info?.package_url || "https://pypi.org/project/" + query + "/", data.info?.summary || "", "pypi"));
-    } catch { /* exact package lookup is optional */ }
+    } catch (error) { if (/Search HTTP (?:429|40[13]|5\d\d)/.test(error.message || '')) throw error; }
   }
   if (rows.length < count) {
-    const { text } = await curlRequest("https://pypi.org/search/?" + new URLSearchParams({ q: query }), { timeout: 15, maxBytes: 1200000 });
+    const { text } = await checkedSearchRequest("https://pypi.org/search/?" + new URLSearchParams({ q: query }), { timeout: 15, maxBytes: 1200000 });
+    assertSearchPageUsable(text, 'pypi');
     rows.push(...parsePypiHtml(text, count - rows.length));
   }
   return dedupe(rows).slice(0, count);
@@ -2688,6 +2708,7 @@ function intentProviderOrder(intent, query, override, notes) {
 async function runIntentProvider(intent, provider, query, count) {
   if (intent === "academic") return runScholarProviderTracked(provider, query, count);
   if (intent === "code") {
+    health.claim(providerStats(provider));
     const started = Date.now();
     try {
       const rows = await packageProvider(provider, query, count);
@@ -3129,6 +3150,7 @@ function storeDocumentSnapshot(content, metadata, cacheKey = "") {
     format: String(metadata.format || ""),
     diagnostics: Array.isArray(metadata.diagnostics) ? metadata.diagnostics : [],
     links: Array.isArray(metadata.links) ? metadata.links : [],
+    sections: Array.isArray(metadata.sections) ? metadata.sections : [],
     createdAt: existing?.createdAt || now,
     lastAccess: now,
   };
@@ -3284,6 +3306,7 @@ function formatFetchedContent(response, args = {}) {
       format,
       diagnostics,
       links: allLinks,
+      sections: isHtml ? htmlSections(text, fullBody) : [],
     }, args?._document_cache_key || "");
     return formatDocumentSnapshot(document, {
       ...args,
@@ -3649,11 +3672,36 @@ function genericReadStructure(text, args, kind) {
   };
 }
 
+function htmlSections(html, body) {
+  const sections = [];
+  const cursors = new Map();
+  for (const match of html.matchAll(/<h[1-6]\b([^>]*)>([\s\S]*?)<\/h[1-6]\s*>/gi)) {
+    const title = stripTagsToText(match[2].replace(/<a\b[^>]*class=["'][^"']*headerlink[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, '')).replace(/\u00b6/g, '').trim();
+    if (!title) continue;
+    const index = body.indexOf(title, cursors.get(title) || 0);
+    if (index < 0) continue;
+    const anchor = match[1].match(/\bid\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const permalink = match[2].match(/<a\b[^>]*class=["'][^"']*headerlink[^"']*["'][^>]*href=["']#([^"']+)["']/i);
+    sections.push({ start: Array.from(body.slice(0, index)).length, title, anchor: decodeEntities(anchor?.[1] || anchor?.[2] || permalink?.[1] || '') });
+    cursors.set(title, index + title.length);
+  }
+  return sections.sort((a, b) => a.start - b.start);
+}
+
+function renderReadSnapshot(document, args, snapshot) {
+  const formatted = formatDocumentSnapshot(document, args, snapshot);
+  if (args.query === undefined && args.quote === undefined) return formatted;
+  const found = evidence(document, { ...args, max_chars: Math.min(Number(args.max_chars) || DEFAULT_FETCH_MAX_CHARS, MAX_OUTPUT_CHARS) });
+  const structuredContent = { ...formatted.structuredContent, content: '', offset: 0, end: 0, next_offset: null, ...found };
+  return { text: JSON.stringify(structuredContent, null, 2), structuredContent };
+}
+
 async function readUrl(args = {}) {
+  if (args.query !== undefined || args.quote !== undefined) evidence({ id: '', content: '' }, args);
   if (args?.document_id) {
     const document = getDocumentSnapshot(args.document_id);
     if (!document) throw new Error("Document snapshot not found or expired: " + args.document_id + ". Read the URL again to create a new snapshot.");
-    const formatted = formatDocumentSnapshot(document, args, "cache");
+    const formatted = renderReadSnapshot(document, args, "cache");
     return structuredTextResult(formatted.text, formatted.structuredContent);
   }
   const url = ensureUrl(args?.url);
@@ -3664,9 +3712,10 @@ async function readUrl(args = {}) {
   const documentId = headerValue(text, "Document ID");
   const document = documentId ? getDocumentSnapshot(documentId) : null;
   if (document) {
-    const formatted = formatDocumentSnapshot(document, args, headerValue(text, "Snapshot") || "new");
+    const formatted = renderReadSnapshot(document, args, headerValue(text, "Snapshot") || "new");
     return structuredTextResult(formatted.text, formatted.structuredContent);
   }
+  if (args.query !== undefined || args.quote !== undefined) throw new Error('No usable document snapshot for evidence lookup. ' + text.slice(0, 1200));
   return structuredTextResult(text, genericReadStructure(text, args, kind));
 }
 
@@ -3695,8 +3744,10 @@ async function browserInteract(args = {}) {
 }
 
 const COMPACT_TOOL_NAMES = new Set(["web_search", "read_url", "browser_interact"]);
+Object.assign(TOOLS.find(tool => tool.name === 'read_url').inputSchema.properties, contract.read_properties);
+TOOLS.find(tool => tool.name === 'read_url').description += ' ' + EVIDENCE_GUIDANCE;
 function serverInstructions() {
-  return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS;
+  return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS + ' ' + EVIDENCE_GUIDANCE;
 }
 function listedTools() {
   const selected = TOOL_PROFILE === "full" ? TOOLS : TOOLS.filter((tool) => COMPACT_TOOL_NAMES.has(tool.name));

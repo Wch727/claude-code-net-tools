@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+0.14 新增：`read_url` 用 `query` 在完整快照中定位段落、用 `quote` 核对引文，返回章节、PDF 物理页和原文位置；搜索源冷却后随下一次请求尝试恢复。两版均支持，默认仍只有三个工具。具体参数见[文档内检索与引用定位](docs/document-search.zh.md)。不会自动重新启用本机 MCP。
+
 默认禁止内网访问、调用者 HTTP 写操作和内置浏览器。代理路由需要显式信任；Cookie 文件使用当前用户私有权限。升级前请阅读[安全默认值与授权配置](docs/security.zh.md)，按实际需求授权后重启 MCP。
 
 质量验收入口：`npm run quality`。固定题库、报告字段和“原生工具 + Playwright”对照步骤见[质量验收](docs/quality.zh.md)。真实浏览器与联网测试分别通过 `--browser`、`--live` 显式启用；本地模拟通过不等于真实搜索质量提升。

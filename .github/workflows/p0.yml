@@ -1,4 +1,4 @@
-name: P0 Cross-platform Verification
+name: Cross-platform Verification
 on:
   push:
     branches: [main]

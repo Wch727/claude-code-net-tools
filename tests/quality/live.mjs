@@ -47,7 +47,7 @@ export async function runLive(root, cases) {
           const urls = [...new Set((data?.results || []).map(row => row.url).filter(Boolean))];
           const notes = data?.notes || [];
           const providerErrors = item.category === 'search' && /time budget|Subprocess|HTTP (?:4|5)\d\d|failed|captcha|blocked|timed out/i.test(notes.join('\n') || text);
-          rows.push({ runtime: runtime.name, case_id: item.id, status: response.error || response.result?.isError ? 'error' : urls.length || item.category !== 'search' ? 'returned' : providerErrors ? 'provider_error' : 'empty',
+          rows.push({ runtime: runtime.name, case_id: item.id, status: response.error || response.result?.isError ? 'error' : data?.mode && data.matched !== true ? 'evidence_missing' : urls.length || item.category !== 'search' ? 'returned' : providerErrors ? 'provider_error' : 'empty',
             elapsed_ms: Math.round(performance.now() - start), output_chars: text.length, returned_url_count: urls.length, urls,
             provider_errors_detected: !!providerErrors, provider_notes: notes,
             source_relevance: null, answer_correctness: null, text_excerpt: text.slice(0, 4000) });

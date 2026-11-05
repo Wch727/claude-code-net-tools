@@ -16,7 +16,7 @@ const report = {
   schema_version: 1, started_at: new Date().toISOString(), platform: process.platform, node: process.version,
   scope: 'MCP process tests; not a Claude Code end-to-end or native-tool comparison',
   suites: [], live: [],
-  unmeasured: ['Native WebSearch/WebFetch + Playwright baseline', 'LLM tool selection and answer correctness', 'Search relevance and source credibility (human review)', 'Actual model tokens and billing', 'Real browser orphan process count', 'Provider recovery after cooldown expiry', 'Full offline and cross-platform matrix'],
+  unmeasured: ['Native Claude Code WebSearch/WebFetch + Playwright baseline', 'LLM tool selection and answer correctness', 'Search relevance and source credibility (human review)', 'Actual model tokens and billing', 'Real browser orphan process count', 'Full offline and cross-platform matrix'],
 };
 // Retain bounded diagnostics without including child environment variables.
 async function suite(id, script, coverage, mode, timeout = 180000) {
@@ -41,6 +41,7 @@ async function suite(id, script, coverage, mode, timeout = 180000) {
   console.log(`${id}: ${row.status}${skipped ? ' (inspect skipped coverage)' : ''} ${row.elapsed_ms}ms`);
 }
 await suite('protocol-document', 'tests/mcp-regression.mjs', ['person-zh (mock only)', 'long-paper (synthetic PDF only)', 'rate-limit'], 'localhost + mock browser');
+await suite('recovery-evidence-parity', 'tests/p1p2.mjs', ['cooldown recovery', 'verbatim quotes', 'PDF page locations', 'Unicode offsets', 'Node/Python parity'], 'shared fixtures + controlled clock');
 await suite('request-lifecycle', 'tests/safety-regression.mjs', ['network-timeout', 'cancel', 'browser close retry', 'DeepSeek response parsing (mock only)'], 'localhost + mock CLI');
 await suite('owner-watch', 'tests/browser-owner.mjs', ['owner-exit (mock daemon only)'], 'local processes');
 await suite('security-boundaries', 'tests/p0.mjs', ['private addresses', 'redirects', 'write permissions', 'credential storage'], 'localhost + real OS permissions');
@@ -78,4 +79,4 @@ const comparison = [columns.join(','), ...cases.flatMap(item => ['native-playwri
 try { await writeFile(path.join(root, '.quality/comparison.csv'), comparison, { flag: 'wx' }); }
 catch (error) { if (error.code !== 'EEXIST') throw error; }
 console.log('Report: .quality/latest.md and .quality/latest.json');
-if (report.suites.some(row => row.status !== 'passed') || report.live.some(row => ['error', 'provider_error'].includes(row.status))) process.exitCode = 1;
+if (report.suites.some(row => row.status !== 'passed') || report.live.some(row => ['error', 'provider_error', 'evidence_missing'].includes(row.status))) process.exitCode = 1;

@@ -1,5 +1,7 @@
 # Claude Code Net Tools
 
+New in 0.14: `read_url` accepts `query` to locate passages and `quote` to check extracted text, returning sections, physical PDF pages and source offsets. Providers recover on the next real request after cooldown. Both runtimes support this without adding to the three default tools. See [Document Search and Citation Locations](docs/document-search.en.md). This update does not re-enable a disabled local MCP registration.
+
 Private-network access, caller-selected HTTP writes and the built-in browser are disabled by default. Proxies require explicit trust; credential files use owner-only permissions. Read [secure defaults and permissions](docs/security.en.md) before upgrading, then restart the MCP after configuring required grants.
 
 Run `npm run quality` for acceptance reporting. See [Quality Acceptance](docs/quality.en.md) for fixed cases, metrics, and the native-tools + Playwright comparison procedure. Opt into real-browser and public-web checks with `--browser` and `--live`; passing fixtures does not establish better live search quality.

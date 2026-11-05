@@ -122,6 +122,10 @@ function cleanEnv(baseUrl, runtime) {
   env.CLAUDE_NET_ARXIV_API_URL = `${baseUrl}/arxiv`;
   env.CLAUDE_NET_TEST_BASE_URL = baseUrl;
   env.CLAUDE_NET_ARXIV_COOLDOWN_MS = "60000";
+  env.CLAUDE_NET_PROVIDER_COOLDOWN_MS = "1000";
+  env.CLAUDE_NET_PROVIDER_FAIL_LIMIT = "1";
+  env.DEEPSEEK_API_KEY = "fixture-only";
+  env.DEEPSEEK_SEARCH_URL = `${baseUrl}/recover`;
   env.CLAUDE_NET_COOKIE_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "cookies");
   env.CLAUDE_NET_SESSION_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "sessions");
   env.CLAUDE_NET_CURL = process.platform === "win32" ? "curl.exe" : "curl";
@@ -276,6 +280,28 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assert.equal(secondRead.structuredContent?.snapshot, "cache", `${label} read_url continuation snapshot`);
     assert.equal(secondRead.structuredContent?.offset, 500, `${label} read_url continuation offset`);
     assert.equal(hitCounters.page, beforeSnapshotPage + 1, `${label} read_url continuation must not refetch`);
+    const found = await client.callToolResult('read_url', { document_id: documentId, query: 'paragraph 80', max_chars: 500 });
+    assert.equal(found.structuredContent.matched, true, label + ' find beyond first chunk');
+    assert.equal(found.structuredContent.matches[0].section_hint, 'Fixture Page');
+    assert.equal(found.structuredContent.matches[0].section_source, 'html_heading');
+    assert.equal(found.structuredContent.matches[0].citation_url, `${baseUrl}/page#fixture`);
+    const checked = await client.callToolResult('read_url', { document_id: documentId, quote: found.structuredContent.matches[0].quote, max_chars: 500 });
+    assert.equal(checked.structuredContent.matched, true, label + ' exact quote verification');
+    const missing = await client.callToolResult('read_url', { document_id: documentId, quote: 'Not a sentence in this fixture.' });
+    assert.equal(missing.structuredContent.matched, false);
+    assert.equal(hitCounters.page, beforeSnapshotPage + 1, label + ' find and quote must not download again');
+
+    const beforeRecovery = hitCounters.recovery;
+    const recoverArgs = { query: 'recovery fixture', providers: ['deepseek'], browser: 'never', verify_top: 0, count: 1 };
+    const failed = await client.callToolResult('web_search', recoverArgs);
+    assert.equal(failed.structuredContent.results.length, 0);
+    const cooled = await client.callTool('web_search', recoverArgs);
+    assertIncludes(cooled, 'cooldown', label + ' explicit provider still respects cooldown');
+    assert.equal(hitCounters.recovery, beforeRecovery + 1, label + ' no request during cooldown');
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    const recovered = await client.callToolResult('web_search', recoverArgs);
+    assert.equal(recovered.structuredContent.results.length, 1, label + ' request-driven recovery');
+    assert.equal(hitCounters.recovery, beforeRecovery + 2);
 
     const hugeRead = await client.callToolResult("read_url", { url: `${baseUrl}/huge-page`, extract: "readable", max_chars: 500, refresh: true });
     assert.ok(hugeRead.structuredContent?.total_chars > 1200000, `${label} read_url must snapshot HTML beyond the old byte cap`);
@@ -298,6 +324,10 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
       const secondPdfRead = await client.callToolResult("read_url", { document_id: pdfDocumentId, offset: 500, max_chars: 500 });
       assert.equal(secondPdfRead.structuredContent?.snapshot, "cache", `${label} read_url PDF continuation snapshot`);
       assert.equal(hitCounters.pdf, beforeSnapshotPdf + 1, `${label} read_url PDF continuation must not refetch`);
+      const pdfFind = await client.callToolResult('read_url', { document_id: pdfDocumentId, query: 'Long PDF fixture line', max_matches: 1 });
+      assert.equal(pdfFind.structuredContent.matched, true);
+      assert.ok(pdfFind.structuredContent.matches[0].page >= 1, label + ' physical PDF page');
+      assert.equal(hitCounters.pdf, beforeSnapshotPdf + 1, label + ' PDF find does not redownload');
     } else {
       console.warn(`Skipping ${label} PDF pagination smoke: pdftotext is unavailable.`);
     }
@@ -339,7 +369,8 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
     assert.equal(hitCounters.arxiv, before + 1, `${label} should call arXiv fixture once`);
 
     const arxivSecond = await client.callTool("scholar_search", { query: "BERT", providers: ["arxiv"], count: 1 });
-    assertIncludes(arxivSecond, "recently returned HTTP 429", `${label} arxiv cooldown`);
+    assertIncludes(arxivSecond, "cooldown", `${label} arxiv cooldown`);
+    assertIncludes(arxivSecond, "429", `${label} arxiv cooldown reason`);
     assert.equal(hitCounters.arxiv, before + 1, `${label} should not call arXiv fixture while cooling down`);
 
     const cooldownStatus = await client.callTool("search_status", { providers: ["arxiv"] });
@@ -398,19 +429,25 @@ function buildPdf(lines) {
 const longText = Array.from({ length: 90 }, (_, index) => `Long fixture paragraph ${index} keeps enough readable text for pagination.`).join(" ");
 const longPdf = buildPdf(Array.from({ length: 70 }, (_, index) => `Long PDF fixture line ${String(index).padStart(3, "0")}: pagination keeps reading beyond the first chunk.`));
 const hugeText = "Large document snapshot content. ".repeat(50000);
-const hitCounters = { page: 0, pdf: 0, huge: 0, arxiv: 0 };
+const hitCounters = { page: 0, pdf: 0, huge: 0, arxiv: 0, recovery: 0 };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   if (url.pathname === "/page") {
     hitCounters.page += 1;
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(`<!doctype html><html><head><title>Fixture</title></head><body><article><h1>Fixture Page</h1><p>${longText}</p><a href="/alpha">Alpha</a><a href="/beta">Beta</a><a href="https://example.org/out">External</a></article></body></html>`);
+    res.end(`<!doctype html><html><head><title>Fixture</title></head><body><nav><h3>Footer Heading</h3></nav><article><h1><a href="#toc">Fixture Page</a><a class="headerlink" href="#fixture">&#182;</a></h1><p>${longText}</p><h3>Footer Heading</h3><a href="/alpha">Alpha</a><a href="/beta">Beta</a><a href="https://example.org/out">External</a></article></body></html>`);
     return;
   }
   if (url.pathname === "/huge-page") {
     hitCounters.huge += 1;
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><html><head><title>Huge Fixture</title></head><body><article><h1>Huge Fixture</h1><p>${hugeText}</p></article></body></html>`);
+    return;
+  }
+  if (url.pathname === '/recover') {
+    hitCounters.recovery++;
+    if (hitCounters.recovery % 2 === 1) { res.writeHead(429); res.end('Rate limited'); }
+    else { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ results: [{ title: 'Recovered fixture', url: `${baseUrl}/page`, summary: 'Recovery fixture source' }] })); }
     return;
   }
   if (url.pathname === "/paper.pdf") {

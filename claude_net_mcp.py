@@ -29,6 +29,8 @@ import signal
 from runtime import Operation, operation, run_process, submit, remember, redact, sanitize, check_operation
 import network_policy as policy
 from private_storage import private_file
+import provider_health as health
+from document_evidence import CONTRACT, evidence, EVIDENCE_GUIDANCE
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,7 +39,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 SERVER_NAME = "claude-code-net-tools"
-SERVER_VERSION = "0.13.0"
+SERVER_VERSION = "0.14.0"
 MCP_INSTRUCTIONS = (
     "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt. "
     "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall. "
@@ -79,7 +81,7 @@ ARXIV_RATE_LIMITED_UNTIL = 0.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 TRANSPORT_MODE = ""
 SEND_LOCK = threading.Lock()
-PROVIDER_FAIL_LIMIT = max(1, min(int(os.environ.get("CLAUDE_NET_PROVIDER_FAIL_LIMIT", "3")), 10))
+PROVIDER_FAIL_LIMIT = health.FAILURE_LIMIT
 PROVIDER_STATS: dict[str, dict[str, Any]] = {}
 HIDDEN_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 SEARCH_PROVIDER_META = {
@@ -933,12 +935,19 @@ def _filter_domains(rows: list[dict[str, str]], allowed: list[str], blocked: lis
     return out
 
 
+def _search_request_url(url, **kwargs):
+    response = _request_url(url, **kwargs)
+    if not _http_status_ok(response[4]):
+        raise RuntimeError("Search HTTP " + str(response[4]))
+    return response
+
+
 def _search_brave(query: str, count: int) -> list[dict[str, str]]:
     key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
     if not key:
         return []
     url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode({"q": query, "count": min(count, 20), "spellcheck": "1"})
-    _, content_type, body, _, _ = _request_url(url, timeout=SEARCH_TIMEOUT, headers={"Accept": "application/json", "X-Subscription-Token": key})
+    _, content_type, body, _, _ = _search_request_url(url, timeout=SEARCH_TIMEOUT, headers={"Accept": "application/json", "X-Subscription-Token": key})
     data = json.loads(_decode_body(body, content_type))
     return [_result(item.get("title"), item.get("url"), item.get("description"), "brave") for item in data.get("web", {}).get("results", [])]
 
@@ -948,7 +957,7 @@ def _search_serper(query: str, count: int) -> list[dict[str, str]]:
     if not key:
         return []
     body = json.dumps({"q": query, "num": count}).encode("utf-8")
-    _, content_type, response, _, _ = _request_url("https://google.serper.dev/search", method="POST", timeout=SEARCH_TIMEOUT, headers={"Content-Type": "application/json", "X-API-KEY": key}, body=body)
+    _, content_type, response, _, _ = _search_request_url("https://google.serper.dev/search", method="POST", timeout=SEARCH_TIMEOUT, headers={"Content-Type": "application/json", "X-API-KEY": key}, body=body)
     data = json.loads(_decode_body(response, content_type))
     return [_result(item.get("title"), item.get("link"), item.get("snippet"), "serper") for item in data.get("organic", [])]
 
@@ -976,7 +985,7 @@ def _search_tavily(query: str, count: int) -> list[dict[str, str]]:
     if not key:
         return []
     body = json.dumps({"api_key": key, "query": query, "max_results": count, "include_answer": False}).encode("utf-8")
-    _, content_type, response, _, _ = _request_url("https://api.tavily.com/search", method="POST", timeout=DEFAULT_TIMEOUT, headers={"Content-Type": "application/json"}, body=body)
+    _, content_type, response, _, _ = _search_request_url("https://api.tavily.com/search", method="POST", timeout=DEFAULT_TIMEOUT, headers={"Content-Type": "application/json"}, body=body)
     data = json.loads(_decode_body(response, content_type))
     return [_result(item.get("title"), item.get("url"), item.get("content"), "tavily") for item in data.get("results", [])]
 
@@ -1006,7 +1015,7 @@ def _search_chat_web(query: str, count: int, provider: str) -> list[dict[str, st
         "temperature": 0.2,
     }
     body = json.dumps(payload).encode("utf-8")
-    _, content_type, response, _, _ = _request_url(base.rstrip("/") + "/chat/completions", method="POST", timeout=45, max_bytes=1200000, headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"}, body=body)
+    _, content_type, response, _, _ = _search_request_url(base.rstrip("/") + "/chat/completions", method="POST", timeout=45, max_bytes=1200000, headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"}, body=body)
     data = json.loads(_decode_body(response, content_type))
     content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     if not content:
@@ -1029,7 +1038,9 @@ def _assert_search_page_usable(text: str, provider: str) -> None:
 
 def _search_duckduckgo(query: str, count: int) -> list[dict[str, str]]:
     url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
-    _, content_type, body, _, _ = _request_url(url, timeout=SEARCH_TIMEOUT)
+    _, content_type, body, _, status = _request_url(url, timeout=SEARCH_TIMEOUT)
+    if not _http_status_ok(status):
+        raise RuntimeError("Search HTTP " + str(status))
     text = _decode_body(body, content_type)
     _assert_search_page_usable(text, "duckduckgo")
     parser = DuckDuckGoParser()
@@ -1064,26 +1075,34 @@ def _search_http_text(url: str, timeout: float = SEARCH_TIMEOUT) -> str:
 
 def _search_bing_rss(query: str, count: int) -> list[dict[str, str]]:
     params = {"format": "rss", "q": query, "setlang": "zh-CN", "cc": "CN", "mkt": "zh-CN"} if _is_cjk(query) else {"format": "rss", "q": query, "setlang": "en-US", "cc": "US"}
-    return _parse_bing_rss(_search_http_text("https://www.bing.com/search?" + urllib.parse.urlencode(params)), count)
+    text = _search_http_text("https://www.bing.com/search?" + urllib.parse.urlencode(params))
+    _assert_search_page_usable(text, "bing_rss")
+    return _parse_bing_rss(text, count)
 
 
 def _search_bing_html(query: str, count: int) -> list[dict[str, str]]:
     params = {"q": query, "setlang": "zh-CN", "cc": "CN", "mkt": "zh-CN"} if _is_cjk(query) else {"q": query}
-    _, content_type, body, _, _ = _request_url("https://www.bing.com/search?" + urllib.parse.urlencode(params), timeout=SEARCH_TIMEOUT)
+    _, content_type, body, _, status = _request_url("https://www.bing.com/search?" + urllib.parse.urlencode(params), timeout=SEARCH_TIMEOUT)
+    if not _http_status_ok(status):
+        raise RuntimeError("Search HTTP " + str(status))
     text = _decode_body(body, content_type)
     _assert_search_page_usable(text, "bing_html")
     return _parse_generic_html(text, count, "bing_html")
 
 
 def _search_sogou(query: str, count: int) -> list[dict[str, str]]:
-    _, content_type, body, _, _ = _request_url("https://www.sogou.com/web?" + urllib.parse.urlencode({"query": query}), timeout=SEARCH_TIMEOUT)
+    _, content_type, body, _, status = _request_url("https://www.sogou.com/web?" + urllib.parse.urlencode({"query": query}), timeout=SEARCH_TIMEOUT)
+    if not _http_status_ok(status):
+        raise RuntimeError("Search HTTP " + str(status))
     text = _decode_body(body, content_type)
     _assert_search_page_usable(text, "sogou")
     return _parse_generic_html(text, count, "sogou")
 
 
 def _search_so360(query: str, count: int) -> list[dict[str, str]]:
-    _, content_type, body, _, _ = _request_url("https://www.so.com/s?" + urllib.parse.urlencode({"q": query}), timeout=SEARCH_TIMEOUT)
+    _, content_type, body, _, status = _request_url("https://www.so.com/s?" + urllib.parse.urlencode({"q": query}), timeout=SEARCH_TIMEOUT)
+    if not _http_status_ok(status):
+        raise RuntimeError("Search HTTP " + str(status))
     text = _decode_body(body, content_type)
     _assert_search_page_usable(text, "so360")
     return _parse_generic_html(text, count, "so360")
@@ -1147,24 +1166,27 @@ def _provider_availability(provider: Any, group: str = "all") -> dict[str, Any]:
 
 def _provider_stats(provider: Any) -> dict[str, Any]:
     name = _normalize_provider_name(provider)
-    if name not in PROVIDER_STATS:
-        PROVIDER_STATS[name] = {"success": 0, "failure": 0, "consecutiveFailures": 0, "lastMs": 0, "lastCount": 0, "lastError": "", "lastAt": ""}
-    return PROVIDER_STATS[name]
+    with health.lock:
+        if name not in PROVIDER_STATS:
+            PROVIDER_STATS[name] = {"success": 0, "failure": 0, "consecutiveFailures": 0, "lastMs": 0, "lastCount": 0, "lastError": "", "lastAt": ""}
+        return PROVIDER_STATS[name]
 
 
 def _record_provider(provider: Any, ok: bool, elapsed_ms: int, count: int = 0, error: str = "") -> None:
-    stats = _provider_stats(provider)
-    if ok:
-        stats["success"] += 1
-        stats["consecutiveFailures"] = 0
-        stats["lastError"] = ""
-    else:
-        stats["failure"] += 1
-        stats["consecutiveFailures"] += 1
-        stats["lastError"] = str(error or "unknown error")[:240]
-    stats["lastMs"] = elapsed_ms
-    stats["lastCount"] = count
-    stats["lastAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with health.lock:
+        stats = _provider_stats(provider)
+        if ok:
+            stats["success"] += 1
+            stats["consecutiveFailures"] = 0
+            stats["lastError"] = ""
+        else:
+            stats["failure"] += 1
+            stats["consecutiveFailures"] += 1
+            stats["lastError"] = str(error or "unknown error")[:240]
+        stats["lastMs"] = elapsed_ms
+        stats["lastCount"] = count
+        stats["lastAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        health.complete(stats, ok, str(error))
 
 
 def _dedupe_providers(providers: list[Any]) -> list[str]:
@@ -2021,8 +2043,7 @@ def _provider_order(query: str, override: Any) -> list[str]:
     return ["bing_rss", "duckduckgo", "bing_html"]
 
 
-def _active_provider_order(query: str, override: Any, notes: list[str], ignore_failure_limit: bool = False) -> list[str]:
-    explicit = isinstance(override, list) and bool(override)
+def _active_provider_order(query: str, override: Any, notes: list[str]) -> list[str]:
     out: list[str] = []
     for provider in _provider_order(query, override):
         availability = _provider_availability(provider, "web")
@@ -2030,8 +2051,8 @@ def _active_provider_order(query: str, override: Any, notes: list[str], ignore_f
             notes.append(f"{provider}: skipped ({availability['reason']})")
             continue
         stats = _provider_stats(provider)
-        if not explicit and not ignore_failure_limit and stats["consecutiveFailures"] >= PROVIDER_FAIL_LIMIT:
-            notes.append(f"{provider}: skipped after {stats['consecutiveFailures']} consecutive failure(s); run search_status live=true to refresh")
+        if not health.ready(stats):
+            notes.append(provider + ": " + health.reason(stats))
             continue
         out.append(provider)
     return out
@@ -2067,6 +2088,7 @@ def _run_provider(provider: str, query: str, count: int) -> list[dict[str, str]]
 
 
 def _run_provider_tracked(provider: str, query: str, count: int) -> list[dict[str, str]]:
+    health.claim(_provider_stats(provider))
     started = time.time()
     try:
         rows = _run_provider(provider, query, count)
@@ -2078,6 +2100,7 @@ def _run_provider_tracked(provider: str, query: str, count: int) -> list[dict[st
 
 
 def _run_scholar_provider_tracked(provider: str, query: str, count: int) -> list[dict[str, str]]:
+    health.claim(_provider_stats(provider))
     started = time.time()
     try:
         rows = _scholar_provider(provider, query, count)
@@ -2145,6 +2168,9 @@ def search_status(arguments: dict[str, Any]) -> str:
                 f"success={stats['success']}",
                 f"failure={stats['failure']}",
                 f"consecutiveFailures={stats['consecutiveFailures']}",
+                "recovery=" + ("probe-ready" if stats.get("retryAt") else "ready") if health.ready(stats) else "recovery=cooldown/probing",
+                f"retryAt={stats.get('retryAt', 0)}",
+                f"failureKind={stats.get('failureKind') or 'none'}",
             ]
             if live_note:
                 pieces.append(live_note)
@@ -2270,7 +2296,7 @@ def net_doctor(arguments: dict[str, Any]) -> str:
 
 def _search_semantic_scholar(query: str, count: int) -> list[dict[str, str]]:
     fields = "title,url,abstract,year,venue,authors,externalIds,openAccessPdf"
-    _, content_type, body, _, _ = _request_url("https://api.semanticscholar.org/graph/v1/paper/search?" + urllib.parse.urlencode({"query": query, "limit": count, "fields": fields}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
+    _, content_type, body, _, _ = _search_request_url("https://api.semanticscholar.org/graph/v1/paper/search?" + urllib.parse.urlencode({"query": query, "limit": count, "fields": fields}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
     data = json.loads(_decode_body(body, content_type))
     rows = []
     for item in data.get("data", []):
@@ -2283,7 +2309,7 @@ def _search_semantic_scholar(query: str, count: int) -> list[dict[str, str]]:
 
 
 def _search_crossref(query: str, count: int) -> list[dict[str, str]]:
-    _, content_type, body, _, _ = _request_url("https://api.crossref.org/works?" + urllib.parse.urlencode({"query": query, "rows": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
+    _, content_type, body, _, _ = _search_request_url("https://api.crossref.org/works?" + urllib.parse.urlencode({"query": query, "rows": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
     data = json.loads(_decode_body(body, content_type))
     rows = []
     for item in data.get("message", {}).get("items", []):
@@ -2401,7 +2427,7 @@ def scholar_search(arguments: dict[str, Any]) -> str:
     return _format_result_rows("Scholar results for: " + query, _rank_scholar_rows(rows, query)[:count], notes)
 
 def _search_npm_packages(query: str, count: int) -> list[dict[str, str]]:
-    _, content_type, body, _, _ = _request_url("https://registry.npmjs.org/-/v1/search?" + urllib.parse.urlencode({"text": query, "size": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
+    _, content_type, body, _, _ = _search_request_url("https://registry.npmjs.org/-/v1/search?" + urllib.parse.urlencode({"text": query, "size": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/json"})
     data = json.loads(_decode_body(body, content_type))
     rows = []
     for item in data.get("objects", []):
@@ -2412,7 +2438,7 @@ def _search_npm_packages(query: str, count: int) -> list[dict[str, str]]:
 
 
 def _search_github_repos(query: str, count: int) -> list[dict[str, str]]:
-    _, content_type, body, _, _ = _request_url("https://api.github.com/search/repositories?" + urllib.parse.urlencode({"q": query, "per_page": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/vnd.github+json"})
+    _, content_type, body, _, _ = _search_request_url("https://api.github.com/search/repositories?" + urllib.parse.urlencode({"q": query, "per_page": count}), timeout=15, max_bytes=1200000, headers={"Accept": "application/vnd.github+json"})
     data = json.loads(_decode_body(body, content_type))
     return [_result(item.get("full_name"), item.get("html_url"), " | ".join(str(x) for x in (item.get("description"), str(item.get("stargazers_count", 0)) + " stars", item.get("language")) if x), "github") for item in data.get("items", [])]
 
@@ -2434,15 +2460,18 @@ def _search_pypi_packages(query: str, count: int) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     if re.match(r"^[A-Za-z0-9_.-]+$", query):
         try:
-            _, content_type, body, _, _ = _request_url("https://pypi.org/pypi/" + urllib.parse.quote(query) + "/json", timeout=12, max_bytes=1200000, headers={"Accept": "application/json"})
+            _, content_type, body, _, _ = _search_request_url("https://pypi.org/pypi/" + urllib.parse.quote(query) + "/json", timeout=12, max_bytes=1200000, headers={"Accept": "application/json"})
             data = json.loads(_decode_body(body, content_type))
             info = data.get("info") or {}
             rows.append(_result((info.get("name") or query) + " " + (info.get("version") or ""), info.get("package_url") or "https://pypi.org/project/" + query + "/", info.get("summary") or "", "pypi"))
-        except Exception:
-            pass
+        except Exception as error:
+            if re.search(r"Search HTTP (?:429|40[13]|5\d\d)", str(error)):
+                raise
     if len(rows) < count:
-        _, content_type, body, _, _ = _request_url("https://pypi.org/search/?" + urllib.parse.urlencode({"q": query}), timeout=15, max_bytes=1200000)
-        rows.extend(_parse_pypi_html(_decode_body(body, content_type), count - len(rows)))
+        _, content_type, body, _, _ = _search_request_url("https://pypi.org/search/?" + urllib.parse.urlencode({"q": query}), timeout=15, max_bytes=1200000)
+        text = _decode_body(body, content_type)
+        _assert_search_page_usable(text, "pypi")
+        rows.extend(_parse_pypi_html(text, count - len(rows)))
     return _dedupe(rows)[:count]
 
 
@@ -2617,6 +2646,7 @@ def _run_intent_provider(intent: str, provider: str, query: str, count: int) -> 
     if intent == "academic":
         return _run_scholar_provider_tracked(provider, query, count)
     if intent == "code":
+        health.claim(_provider_stats(provider))
         started = time.time()
         try:
             rows = _package_provider(provider, query, count)
@@ -3168,6 +3198,7 @@ def _store_document_snapshot(content: str, metadata: dict[str, Any], cache_key: 
         "format": str(metadata.get("format") or ""),
         "diagnostics": list(metadata.get("diagnostics") or []),
         "links": list(metadata.get("links") or []),
+        "sections": list(metadata.get("sections") or []),
         "created_at": existing.get("created_at", now),
         "last_access": now,
     }
@@ -3332,6 +3363,7 @@ def _format_fetched_content(final_url: str, content_type: str, body: bytes, rout
             "format": format_line[8:] if format_line else "",
             "diagnostics": diagnostics,
             "links": all_links,
+            "sections": _html_sections(text, full_output) if is_html else [],
         }, str(arguments.get("_document_cache_key", "")))
         rendered, _ = _format_document_snapshot(document, {
             **arguments,
@@ -3916,12 +3948,59 @@ def _generic_read_structure(text: str, arguments: dict[str, Any], kind: str) -> 
     }
 
 
+def _html_sections(source, body):
+    sections, cursors = [], {}
+    class Headings(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.title, self.anchor, self.tag, self.items, self.skip = [], "", "", [], False
+        def handle_starttag(self, tag, attrs):
+            if re.fullmatch(r"h[1-6]", tag):
+                self.tag, self.title, self.anchor = tag, [], dict(attrs).get("id", "") or ""
+            elif self.tag and tag == "a" and "headerlink" in (dict(attrs).get("class") or "").split():
+                self.skip = True
+                href = dict(attrs).get("href") or ""
+                if not self.anchor and href.startswith("#"):
+                    self.anchor = href[1:]
+        def handle_data(self, data):
+            if self.tag and not self.skip:
+                self.title.append(data)
+        def handle_endtag(self, tag):
+            if tag == "a":
+                self.skip = False
+            if tag == self.tag:
+                self.items.append(("".join(self.title).replace("\u00b6", "").strip(), self.anchor))
+                self.tag = ""
+    parser = Headings()
+    parser.feed(source)
+    for title, anchor in parser.items:
+        if not title:
+            continue
+        index = body.find(title, cursors.get(title, 0))
+        if index < 0:
+            continue
+        sections.append({"start": index, "title": title, "anchor": anchor})
+        cursors[title] = index + len(title)
+    return sorted(sections, key=lambda item: item["start"])
+
+
+def _render_read_snapshot(document, arguments, snapshot):
+    rendered, structured = _format_document_snapshot(document, arguments, snapshot)
+    if "query" not in arguments and "quote" not in arguments:
+        return rendered, structured
+    found = evidence(document, {**arguments, "max_chars": min(int(arguments.get("max_chars", DEFAULT_FETCH_MAX_CHARS)), MAX_OUTPUT_CHARS)})
+    structured.update({"content": "", "offset": 0, "end": 0, "next_offset": None, **found})
+    return json.dumps(structured, ensure_ascii=False, indent=2), structured
+
+
 def read_url(arguments: dict[str, Any]) -> dict[str, Any]:
+    if "query" in arguments or "quote" in arguments:
+        evidence({"id": "", "content": ""}, arguments)
     if arguments.get("document_id"):
         document = _get_document_snapshot(str(arguments["document_id"]))
         if document is None:
             raise ValueError(f"Document snapshot not found or expired: {arguments['document_id']}. Read the URL again to create a new snapshot.")
-        text, structured = _format_document_snapshot(document, arguments, "cache")
+        text, structured = _render_read_snapshot(document, arguments, "cache")
         return _structured_text_result(text, structured)
     url = _ensure_url(arguments.get("url"))
     requested_kind = str(arguments.get("kind", "auto")).lower()
@@ -3931,8 +4010,10 @@ def read_url(arguments: dict[str, Any]) -> dict[str, Any]:
     document_id = _header_value(text, "Document ID")
     document = _get_document_snapshot(document_id) if document_id else None
     if document is not None:
-        rendered, structured = _format_document_snapshot(document, arguments, _header_value(text, "Snapshot") or "new")
+        rendered, structured = _render_read_snapshot(document, arguments, _header_value(text, "Snapshot") or "new")
         return _structured_text_result(rendered, structured)
+    if "query" in arguments or "quote" in arguments:
+        raise ValueError("No usable document snapshot for evidence lookup. " + text[:1200])
     return _structured_text_result(text, _generic_read_structure(text, arguments, kind))
 
 
@@ -3958,10 +4039,12 @@ def browser_interact(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 COMPACT_TOOL_NAMES = {"web_search", "read_url", "browser_interact"}
+READ_URL_TOOL["inputSchema"]["properties"].update(CONTRACT["read_properties"])
+READ_URL_TOOL["description"] += " " + EVIDENCE_GUIDANCE
 
 
 def _server_instructions() -> str:
-    return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS
+    return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS + " " + EVIDENCE_GUIDANCE
 
 def _listed_tools() -> list[dict[str, Any]]:
     selected = TOOLS if TOOL_PROFILE == "full" else [tool for tool in TOOLS if tool.get("name") in COMPACT_TOOL_NAMES]
