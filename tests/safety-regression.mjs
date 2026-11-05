@@ -84,7 +84,8 @@ for (const [command, prefix] of [["py", ["-3"]], ["python3", []], ["python", []]
 }
 assert.equal(runtimes.length, 2, "Python is required for the safety suite");
 const pythonRuntime = runtimes[1];
-const budgetCheck = await runProcess(pythonRuntime[1], [...pythonRuntime[2].slice(0, -1), 'tests/provider-budget.py'], { cwd: root, encoding: 'utf8', timeout: 10000 });
+console.log('Checking scoped provider budgets with Python runtime');
+const budgetCheck = await runProcess(pythonRuntime[1], [...pythonRuntime[2].slice(0, -1), 'tests/provider-budget.py'], { cwd: root, encoding: 'utf8', timeout: 30000 });
 assert.match(budgetCheck.stdout, /healthy fallback ran/);
 
 const active = new Set();

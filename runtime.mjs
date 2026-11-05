@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { enabled, resolveURL } from './network-policy.mjs';
 
 export const operation = new AsyncLocalStorage();
@@ -110,7 +111,7 @@ export async function runCurl(command, args, options) {
       if (proxy >= 0 && !enabled('CLAUDE_NET_TRUST_PROXY')) throw new Error('Proxy routing requires CLAUDE_NET_TRUST_PROXY=true; the proxy is a trusted network boundary');
       const safe = current.filter(value => value !== '-L');
       safe.splice(safe.length - 1, 0, '--proto', '=http,https', '--dump-header', headerFile);
-      if (proxy < 0 && addresses.length) {
+      if (proxy < 0 && addresses.length && !isIP(url.hostname.replace(/^\[|\]$/g, ''))) {
         const address = addresses[0].includes(':') ? '[' + addresses[0] + ']' : addresses[0];
         safe.splice(safe.length - 1, 0, '--resolve', `${url.hostname.replace(/^\[|\]$/g, '')}:${url.port || (url.protocol === 'https:' ? 443 : 80)}:${address}`);
       }

@@ -144,7 +144,11 @@ def curl_text(command, url, timeout, proxy, user_agent, runner, creationflags):
                       "url = " + json.dumps(url), "dump-header = " + json.dumps(header_file),
                       'write-out = "\\n__SEARCH_STATUS__%{http_code}"']
             config.append("proxy = " + json.dumps(proxy) if proxy else 'noproxy = "*"')
-            if not proxy and not private_host_allowed(target.hostname):
+            try:
+                literal = ipaddress.ip_address(target.hostname)
+            except ValueError:
+                literal = None
+            if not proxy and not private_host_allowed(target.hostname) and literal is None:
                 address = public_addresses(target.hostname, target.port or (443 if target.scheme == "https" else 80))[0][4][0]
                 if ':' in address:
                     address = '[' + address + ']'
