@@ -126,6 +126,8 @@ function cleanEnv(baseUrl, runtime) {
   env.CLAUDE_NET_PROVIDER_FAIL_LIMIT = "1";
   env.DEEPSEEK_API_KEY = "fixture-only";
   env.DEEPSEEK_SEARCH_URL = `${baseUrl}/recover`;
+  env.MINIMAX_API_KEY = 'fixture-minimax';
+  env.MINIMAX_BASE_URL = `${baseUrl}/chat-fixture`;
   env.CLAUDE_NET_COOKIE_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "cookies");
   env.CLAUDE_NET_SESSION_DIR = path.join(os.tmpdir(), `claude-net-tools-test-${process.pid}-${runtime}`, "sessions");
   env.CLAUDE_NET_CURL = process.platform === "win32" ? "curl.exe" : "curl";
@@ -305,6 +307,26 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
 
     const hugeRead = await client.callToolResult("read_url", { url: `${baseUrl}/huge-page`, extract: "readable", max_chars: 500, refresh: true });
     assert.ok(hugeRead.structuredContent?.total_chars > 1200000, `${label} read_url must snapshot HTML beyond the old byte cap`);
+    const sourceArgs = { providers: ['minimax'], browser: 'never', verify_top: 0, count: 3 };
+    const cited = await client.callToolResult('web_search', { ...sourceArgs, query: 'fixture citations', required_terms: ['TaskGroup'] });
+    assert.equal(cited.structuredContent.results.length, 1, label + ' required terms exclude generic source: ' + JSON.stringify(cited.structuredContent.notes));
+    assert.equal(cited.structuredContent.results[0].source_type, 'provider_citation');
+    assert.equal(cited.structuredContent.results[0].url, 'https://docs.python.org/3/library/asyncio-task.html#task-groups');
+    assertIncludes(cited.structuredContent.results[0].snippet, 'AI-generated summary', label + ' summary provenance');
+    assertIncludes(cited.structuredContent.results[0].verification, 'unverified', label + ' URL not automatically trusted');
+    const modelLink = await client.callToolResult('web_search', { ...sourceArgs, query: 'fixture model link' });
+    assert.equal(modelLink.structuredContent.results[0].source_type, 'model_link');
+    const noSources = await client.callToolResult('web_search', { ...sourceArgs, query: 'fixture no links' });
+    assert.equal(noSources.structuredContent.results.length, 0, label + ' never substitute API base as a source');
+    assertIncludes(JSON.stringify(noSources.structuredContent.notes), 'no original-source URLs');
+    const browserFiltered = await client.callToolResult('web_search', { query: 'Rosenblatt', browser: 'always', required_terms: ['Rosenblatt'], count: 3 });
+    assert.equal(browserFiltered.structuredContent.results.length, 1, label + ' browser results respect explicit terms');
+
+    const slowStart = Date.now();
+    const slowPdf = await client.request('tools/call', { name: 'read_url', arguments: { url: `${baseUrl}/slow-paper.pdf`, kind: 'pdf', timeout: 1, html_fallback: false, extractor: 'none', browser: 'never' } });
+    assert.equal(slowPdf.isError, true, label + ' failed PDF stage is an error');
+    assertIncludes(JSON.stringify(slowPdf.content), 'PDF download stage', label + ' download failure diagnostic');
+    assert.ok(Date.now() - slowStart < 4000, label + ' PDF overall budget must be bounded');
 
     const pdfHealth = await client.callTool("pdf_status", {});
     if (pdfHealth.includes("Status: available")) {
@@ -320,7 +342,10 @@ async function runRuntime(label, command, args, baseUrl, hitCounters) {
       const beforeSnapshotPdf = hitCounters.pdf;
       const firstPdfRead = await client.callToolResult("read_url", { url: `${baseUrl}/paper.pdf`, kind: "pdf", max_chars: 500, refresh: true });
       const pdfDocumentId = firstPdfRead.structuredContent?.document_id;
+      hitCounters.pdfIds[label] = pdfDocumentId;
       assert.equal(firstPdfRead.structuredContent?.kind, "pdf", `${label} read_url PDF kind`);
+      assert.ok(firstPdfRead.structuredContent.timings.download_ms >= 0, label + ' PDF download timing');
+      assert.ok(firstPdfRead.structuredContent.timings.extraction_ms >= 0, label + ' PDF extraction timing');
       const secondPdfRead = await client.callToolResult("read_url", { document_id: pdfDocumentId, offset: 500, max_chars: 500 });
       assert.equal(secondPdfRead.structuredContent?.snapshot, "cache", `${label} read_url PDF continuation snapshot`);
       assert.equal(hitCounters.pdf, beforeSnapshotPdf + 1, `${label} read_url PDF continuation must not refetch`);
@@ -429,7 +454,7 @@ function buildPdf(lines) {
 const longText = Array.from({ length: 90 }, (_, index) => `Long fixture paragraph ${index} keeps enough readable text for pagination.`).join(" ");
 const longPdf = buildPdf(Array.from({ length: 70 }, (_, index) => `Long PDF fixture line ${String(index).padStart(3, "0")}: pagination keeps reading beyond the first chunk.`));
 const hugeText = "Large document snapshot content. ".repeat(50000);
-const hitCounters = { page: 0, pdf: 0, huge: 0, arxiv: 0, recovery: 0 };
+const hitCounters = { page: 0, pdf: 0, huge: 0, arxiv: 0, recovery: 0, pdfIds: {} };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   if (url.pathname === "/page") {
@@ -454,6 +479,26 @@ const server = http.createServer((req, res) => {
     hitCounters.pdf += 1;
     res.writeHead(200, { "content-type": "application/pdf", "content-length": longPdf.length });
     res.end(longPdf);
+    return;
+  }
+  if (url.pathname === '/chat-fixture/chat/completions') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      const query = JSON.parse(body).messages.at(-1).content;
+      const content = query.includes('no links') ? 'Generated answer with no citations.' : query.includes('model link') ? 'Generated summary: https://example.org/original' : 'Generated summary of both pages.';
+      const data = { choices: [{ message: { content } }] };
+      if (query.includes('citations')) data.citations = [{ title: 'Python downloads', url: 'https://python.org/' }, { title: 'TaskGroup original document', url: 'https://docs.python.org/3/library/asyncio-task.html#task-groups' }];
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(data));
+    });
+    return;
+  }
+  if (url.pathname === '/slow-paper.pdf') {
+    res.writeHead(200, { 'content-type': 'application/pdf' });
+    res.write('%PDF-1.4\n');
+    const timer = setTimeout(() => res.end('late'), 5000);
+    res.once('close', () => clearTimeout(timer));
     return;
   }
   if (url.pathname === "/gbk") {
@@ -509,6 +554,8 @@ try {
     await assertFullProfile("python", python.command, [...python.args, pythonServer], baseUrl);
     const nodeMap = toolMap(nodeTools);
     const pythonMap = toolMap(pythonTools);
+    if (hitCounters.pdfIds.node && hitCounters.pdfIds.python) assert.equal(hitCounters.pdfIds.node, hitCounters.pdfIds.python, 'PDF newline normalization must produce the same snapshot identity');
+    assert.deepEqual(nodeMap.get('web_search').inputSchema.properties.required_terms, pythonMap.get('web_search').inputSchema.properties.required_terms);
     assert.deepEqual([...nodeMap.keys()].sort(), [...pythonMap.keys()].sort(), "Node/Python tool names diverged");
     for (const name of nodeMap.keys()) {
       assert.equal(nodeMap.get(name)?.description, pythonMap.get(name)?.description, `Node/Python descriptions diverged for ${name}`);

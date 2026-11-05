@@ -31,6 +31,7 @@ import network_policy as policy
 from private_storage import private_file
 import provider_health as health
 from document_evidence import CONTRACT, evidence, EVIDENCE_GUIDANCE
+from search_quality import chat_sources, required_terms, REQUIRED_TERMS_SCHEMA, SEARCH_GUIDANCE
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,7 +40,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 SERVER_NAME = "claude-code-net-tools"
-SERVER_VERSION = "0.14.0"
+SERVER_VERSION = "0.14.1"
 MCP_INSTRUCTIONS = (
     "Prefer Claude Code's built-in WebSearch and WebFetch when they are available and return usable results. Use net-tools as a fallback or extension when built-in tools are unavailable, fail, reject a domain, return incomplete content, or when the task needs configurable providers, stable long-document pagination, PDF extraction, session handling, proxy routing, or rendered browser interaction. After a clear built-in failure, switch to net-tools without repeating an equivalent built-in attempt. "
     "Understand the user's intent before searching. For a probable proper name or exact entity, preserve the exact entity text as the primary unquoted query and do not append conversational filler such as who is, profile, biography, or introduction. For broader questions, prepare one precise query from the entity, domain, time scope, and likely authoritative source. Add at most two meaningfully different alternatives only when they improve recall. "
@@ -1017,10 +1018,7 @@ def _search_chat_web(query: str, count: int, provider: str) -> list[dict[str, st
     body = json.dumps(payload).encode("utf-8")
     _, content_type, response, _, _ = _search_request_url(base.rstrip("/") + "/chat/completions", method="POST", timeout=45, max_bytes=1200000, headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"}, body=body)
     data = json.loads(_decode_body(response, content_type))
-    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-    if not content:
-        return []
-    return [_result(f"{provider} web search answer", base, content, provider)]
+    return chat_sources(data, provider, base, count)
 
 
 def _assert_search_page_usable(text: str, provider: str) -> None:
@@ -2518,6 +2516,8 @@ def _format_result_rows(title: str, rows: list[dict[str, str]], notes: list[str]
             lines.append(f"   Snippet: {row['snippet']}")
         if row.get("verification"):
             lines.append(f"   Verification: {row['verification']}")
+        if row.get("source_type"):
+            lines.append(f"   Source type: {row['source_type']}")
     if notes:
         lines.extend(["", "Provider notes:"])
         lines.extend(f"- {note}" for note in notes[:12])
@@ -2673,9 +2673,12 @@ def _search_query_candidates(query: str, arguments: dict[str, Any], intent: str,
             allowance = min(8.0, remaining_seconds / remaining_providers) if remaining_providers > 1 else remaining_seconds
             provider_deadline = min(deadline, time.time() + allowance)
             raw = _run_with_deadline(lambda p=provider: _run_intent_provider(intent, p, query, count), provider_deadline, provider + " for " + repr(query))
-            added = _add_result_batch(batches, provider, raw)
+            usable = required_terms(raw, arguments.get("required_terms"))
+            if len(usable) < len(raw):
+                notes.append(f"{provider}: excluded {len(raw) - len(usable)} result(s) missing required_terms; trying remaining sources if needed")
+            added = _add_result_batch(batches, provider, usable)
             notes.append(f"{provider}: {len(raw)} result(s)")
-            if raw and not added:
+            if usable and not added:
                 notes.append(provider + ": results duplicated an earlier provider")
             preview = _interleave_result_batches(batches, count)
             if len(preview) >= count and _useful_provider_family_count(batches) >= expected_families:
@@ -2702,7 +2705,7 @@ def _verify_search_rows(rows: list[dict[str, Any]], limit: Any, deadline: float,
             title = _html_title(text) if "html" in content_type.lower() else ""
             state = "reachable" if 200 <= int(status or 0) < 400 and text.strip() else "weak response"
             copy["url"] = _clean_url(final_url or row["url"])
-            copy["verification"] = "; ".join(value for value in [state, f"HTTP {status}" if status else "", "title=" + title[:160] if title else "", f"body={len(text)} chars"] if value)
+            copy["verification"] = "; ".join(value for value in [state, f"HTTP {status}" if status else "", "title=" + title[:160] if title else "", f"body={len(text)} chars", "transport reachability only; not fact-checked"] if value)
         except Exception as exc:  # noqa: BLE001
             copy["verification"] = "failed: " + str(exc)[:220]
         return copy
@@ -2727,6 +2730,7 @@ def _verify_search_rows(rows: list[dict[str, Any]], limit: Any, deadline: float,
 
 
 def search_web(arguments: dict[str, Any]) -> str:
+    required_terms([], arguments.get("required_terms"))
     query = str(arguments.get("query", "")).strip()
     if not query:
         raise ValueError("query is required")
@@ -2786,6 +2790,7 @@ def search_web(arguments: dict[str, Any]) -> str:
         [str(value) for value in arguments.get("allowed_domains", [])],
         [str(value) for value in arguments.get("blocked_domains", [])],
     )
+    candidates = required_terms(candidates, arguments.get("required_terms"))
     if intent in {"general", "official"}:
         candidates = _prefer_exact_cjk_entity_matches(candidates, query, notes)
     if intent == "academic":
@@ -3199,6 +3204,7 @@ def _store_document_snapshot(content: str, metadata: dict[str, Any], cache_key: 
         "diagnostics": list(metadata.get("diagnostics") or []),
         "links": list(metadata.get("links") or []),
         "sections": list(metadata.get("sections") or []),
+        "timings": metadata.get("timings") or {},
         "created_at": existing.get("created_at", now),
         "last_access": now,
     }
@@ -3260,6 +3266,9 @@ def _format_document_snapshot(document: dict[str, Any], arguments: dict[str, Any
     diagnostics = list(document.get("diagnostics") or [])
     if diagnostics:
         lines.extend(["Fetch diagnostics:", *("- " + item for item in diagnostics)])
+    timings = document.get("timings") or {}
+    if "download_ms" in timings:
+        lines.append(f"PDF timings (original fetch): download={timings['download_ms']}ms; extraction={timings['extraction_ms']}ms")
     lines.append(f"Content range: characters {start}-{end} of {len(content)}")
     next_offset = end if end < len(content) else None
     if next_offset is not None:
@@ -3282,6 +3291,7 @@ def _format_document_snapshot(document: dict[str, Any], arguments: dict[str, Any
         "route": str(document.get("route", "")),
         "format": str(document.get("format", "")),
         "snapshot": snapshot,
+        "timings": timings,
         "offset": start,
         "end": end,
         "total_chars": len(content),
@@ -3595,7 +3605,7 @@ def _fetch_arxiv_html_fallback(source_url: str, arguments: dict[str, Any], reaso
             "method": "GET",
             "body": None,
             "extract": "readable",
-            "browser": "auto",
+            "browser": arguments.get("browser", "never"),
         })
         return "\n".join([f"PDF fallback: {reason}", f"Readable HTML: {fallback_url}", "", content])
     except Exception as exc:  # noqa: BLE001
@@ -3603,6 +3613,20 @@ def _fetch_arxiv_html_fallback(source_url: str, arguments: dict[str, Any], reaso
 
 
 def fetch_pdf(arguments: dict[str, Any]) -> str:
+    timeout = max(1.0, min(float(arguments.get("timeout", 30)), 120.0))
+    parent = operation.get()
+    scoped = Operation()
+    if parent:
+        scoped.cancelled = parent.cancelled
+    scoped.deadline = min(parent.deadline if parent else float("inf"), time.monotonic() + timeout)
+    token = operation.set(scoped)
+    try:
+        return _fetch_pdf_snapshot(arguments)
+    finally:
+        operation.reset(token)
+
+
+def _fetch_pdf_snapshot(arguments: dict[str, Any]) -> str:
     url = _ensure_url(arguments.get("url"))
     max_chars = max(500, min(int(arguments.get("max_chars", 30000)), MAX_OUTPUT_CHARS))
     timeout = max(1.0, min(float(arguments.get("timeout", 30)), 120.0))
@@ -3620,14 +3644,31 @@ def fetch_pdf(arguments: dict[str, Any]) -> str:
         pdf_path = os.path.join(tmp, "source.pdf")
         text_path = os.path.join(tmp, "source.txt")
         max_bytes = max(100000, min(int(arguments.get("max_bytes", 50000000)), 50000000))
-        final_url, content_type, body, route, status = _request_url(url, max_bytes=max_bytes, **opts)
+        download_started = time.monotonic()
+        can_fallback = arguments.get("html_fallback") is not False and bool(_arxiv_html_fallback_url(url))
+        download_seconds = timeout * (0.7 if can_fallback else 0.85)
+        try:
+            final_url, content_type, body, route, status = _run_with_deadline(
+                lambda: _request_url(url, max_bytes=max_bytes, **opts), time.time() + download_seconds, "PDF download")
+        except Exception as error:
+            context = operation.get()
+            if context and context.cancelled.is_set():
+                raise
+            reason = f"PDF download stage failed after {int((time.monotonic() - download_started) * 1000)}ms: {redact(str(error))}"
+            transient = re.search(r"timeout|timed out|time budget|connection|URLError|Subprocess failed \((?:7|28|35|56)\)", str(error), re.I)
+            if can_fallback and transient:
+                fallback = _fetch_arxiv_html_fallback(url, arguments, reason)
+                if fallback:
+                    return reason + "\n\n" + fallback
+            raise RuntimeError(reason) from error
+        download_ms = int((time.monotonic() - download_started) * 1000)
         _update_session_referer(arguments, final_url)
         lines = [f"URL: {final_url}", f"Route: {route}"]
         if status:
             lines.append(f"Status: {status}")
         lines.append(f"Content-Type: {content_type or 'unknown'}")
         if not _http_status_ok(status):
-            fallback = _fetch_arxiv_html_fallback(url, arguments, f"PDF download returned HTTP {status}.")
+            fallback = "" if int(status) in (401, 403, 429) else _fetch_arxiv_html_fallback(url, arguments, f"PDF download returned HTTP {status}.")
             if fallback:
                 return "\n".join(lines + ["", fallback])
             return "\n".join(lines + ["", f"PDF fetch failed: HTTP {status}. The response was not processed as PDF."])
@@ -3641,6 +3682,7 @@ def fetch_pdf(arguments: dict[str, Any]) -> str:
         with open(pdf_path, "wb") as handle:
             handle.write(body)
         tool = _pdf_text_tool()
+        extraction_started = time.monotonic()
         try:
             run_process(
                 [tool, "-layout", pdf_path, text_path],
@@ -3669,6 +3711,7 @@ def fetch_pdf(arguments: dict[str, Any]) -> str:
             "format": "PDF text",
             "diagnostics": [],
             "links": [],
+            "timings": {"download_ms": download_ms, "extraction_ms": int((time.monotonic() - extraction_started) * 1000)},
         }, cache_key)
         rendered, _ = _format_document_snapshot(document, {**arguments, "max_chars": max_chars}, "new")
         return rendered
@@ -3902,9 +3945,9 @@ def _parse_search_text(text: str, query: str, intent: str = "general") -> dict[s
             continue
         if current is None:
             continue
-        field = re.match(r"^\s+(URL|Provider|Snippet|Verification):\s*(.*)$", line)
+        field = re.match(r"^\s+(URL|Provider|Snippet|Verification|Source type):\s*(.*)$", line)
         if field:
-            current[field.group(1).lower()] = field.group(2)
+            current[field.group(1).lower().replace(" ", "_")] = field.group(2)
     return {"query": query, "intent": intent, "results": results, "notes": notes}
 
 
@@ -4040,11 +4083,13 @@ def browser_interact(arguments: dict[str, Any]) -> dict[str, Any]:
 
 COMPACT_TOOL_NAMES = {"web_search", "read_url", "browser_interact"}
 READ_URL_TOOL["inputSchema"]["properties"].update(CONTRACT["read_properties"])
+next(tool for tool in TOOLS if tool["name"] == "web_search")["inputSchema"]["properties"]["required_terms"] = REQUIRED_TERMS_SCHEMA
+next(tool for tool in TOOLS if tool["name"] == "web_search")["description"] += " " + SEARCH_GUIDANCE
 READ_URL_TOOL["description"] += " " + EVIDENCE_GUIDANCE
 
 
 def _server_instructions() -> str:
-    return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS + " " + EVIDENCE_GUIDANCE
+    return "Prefer native WebSearch/WebFetch for ordinary web access and an existing Playwright MCP for browser interaction. Use net-tools only when explicitly requested or when a task needs its document snapshots, pagination, custom providers, sessions or proxy routing. A configured DeepSeek key does not make net-tools the preferred search tool. " + MCP_INSTRUCTIONS + " " + EVIDENCE_GUIDANCE + " " + SEARCH_GUIDANCE
 
 def _listed_tools() -> list[dict[str, Any]]:
     selected = TOOLS if TOOL_PROFILE == "full" else [tool for tool in TOOLS if tool.get("name") in COMPACT_TOOL_NAMES]
