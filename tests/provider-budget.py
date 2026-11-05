@@ -2,6 +2,8 @@
 import sys
 import time
 import threading
+import faulthandler
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -14,6 +16,7 @@ context = Operation()
 context.deadline = time.monotonic() + 5
 token = operation.set(context)
 calls = []
+faulthandler.dump_traceback_later(15)
 try:
     original_deadline = context.deadline
     server._intent_provider_order = lambda *args: ["slow", "healthy"]
@@ -31,7 +34,8 @@ try:
     assert result["rows"][0]["url"] == "https://example.com/source", result
     assert context.deadline == original_deadline, "child deadline leaked into parent"
     assert any("time budget exhausted" in note for note in result["notes"]), result
-    context.deadline = time.monotonic() + 5
+    # The scope assertions above are complete; transport checks have their own timeout.
+    context.deadline = float('inf')
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(429 if self.path == "/limited" else 200)
@@ -42,14 +46,20 @@ try:
             pass
 
     server.os.environ["CLAUDE_NET_PROXY"] = "direct"
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as fixture:
+    class Fixture(ThreadingHTTPServer):
+        def server_bind(self):
+            # HTTPServer's reverse DNS is irrelevant to a localhost fixture.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address
+
+    with Fixture(("127.0.0.1", 0), Handler) as fixture:
         thread = threading.Thread(target=fixture.serve_forever, daemon=True)
         thread.start()
         try:
             url = "http://127.0.0.1:" + str(fixture.server_port)
-            assert server._search_http_text(url) == "search fixture body"
+            assert server._search_http_text(url, timeout=5) == "search fixture body"
             try:
-                server._search_http_text(url + "/limited")
+                server._search_http_text(url + "/limited", timeout=5)
                 raise AssertionError("429 must not be parsed as successful search content")
             except RuntimeError as error:
                 assert "HTTP 429" in str(error), error
@@ -57,7 +67,7 @@ try:
             previous = server.shutil.which
             server.shutil.which = lambda command: None
             try:
-                assert server._search_http_text(url) == "search fixture body"
+                assert server._search_http_text(url, timeout=5) == "search fixture body"
             finally:
                 server.shutil.which = previous
         finally:
@@ -71,4 +81,5 @@ try:
         assert "cancelled" in str(error), error
     print("Python: slow provider reaped, healthy fallback ran, parent deadline and cancellation preserved")
 finally:
+    faulthandler.cancel_dump_traceback_later()
     operation.reset(token)

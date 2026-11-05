@@ -16,6 +16,8 @@ npm run quality -- --browser --live
 
 默认仅运行本地协议/文档、请求生命周期、父进程监测测试。`--browser` 启动真实无头浏览器访问本地动态页面；`--live` 让 Node 和 Python 分别搜索固定中文姓名并读取 Python 官方文档。联网搜索显式指定免费 DuckDuckGo/Bing RSS，不使用 DeepSeek 等付费接口，不调用 Claude 模型，也不重新注册 MCP。免费站点仍可能反爬或限流。
 
+P0 更新后，默认额外运行网络权限、重定向、Cookie 文件权限和会话隔离测试；`--browser` 也会检查强制结束测试 MCP 后真实浏览器/daemon PID 是否退出。历史白框的窗口根因仍需在症状出现时诊断。安全配置见[安全默认值](security.zh.md)。
+
 报告输出至 `.quality/latest.md` 和 `.quality/latest.json`，目录被 Git 忽略。报告会覆盖上次结果；比较改动前后时应先复制该目录留作基线。报告可能含公开网页摘录，不包含环境变量或配置密钥。
 
 ## 如何解释

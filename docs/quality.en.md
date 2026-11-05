@@ -16,6 +16,8 @@ The default runs local protocol/document, lifecycle, and owner-watch suites. `--
 
 Reports are written to `.quality/latest.md` and `.quality/latest.json`, ignored by Git. Copy the directory before running again to retain a baseline. Reports can contain public-page excerpts, but do not dump environment variables or credentials.
 
+The P0 update adds default network-permission, redirect, credential-permission and session-isolation tests. `--browser` also verifies real browser/daemon PIDs exit after abrupt test-MCP termination. The historical blank window still needs symptom-time attribution. See [secure defaults](security.en.md).
+
 ## Interpret
 
 - Suite pass rate describes assertions, not relevance or answer correctness. Suite duration is not per-query latency, and diagnostic characters are not model context.

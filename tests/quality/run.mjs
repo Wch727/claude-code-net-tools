@@ -43,7 +43,12 @@ async function suite(id, script, coverage, mode, timeout = 180000) {
 await suite('protocol-document', 'tests/mcp-regression.mjs', ['person-zh (mock only)', 'long-paper (synthetic PDF only)', 'rate-limit'], 'localhost + mock browser');
 await suite('request-lifecycle', 'tests/safety-regression.mjs', ['network-timeout', 'cancel', 'browser close retry', 'DeepSeek response parsing (mock only)'], 'localhost + mock CLI');
 await suite('owner-watch', 'tests/browser-owner.mjs', ['owner-exit (mock daemon only)'], 'local processes');
-if (args.includes('--browser')) await suite('rendered-browser', 'tests/browser-live-smoke.mjs', ['dynamic-page'], 'real browser + localhost');
+await suite('security-boundaries', 'tests/p0.mjs', ['private addresses', 'redirects', 'write permissions', 'credential storage'], 'localhost + real OS permissions');
+if (args.includes('--browser')) {
+  await suite('rendered-browser', 'tests/browser-live-smoke.mjs', ['dynamic-page'], 'real browser + localhost');
+  await suite('real-owner-exit', 'tests/browser-lifecycle.mjs', ['owner-exit (real browser and daemon PIDs)'], 'real browser + localhost');
+  report.unmeasured = report.unmeasured.filter(value => value !== 'Real browser orphan process count');
+}
 if (args.includes('--live')) {
   const { runLive } = await import('./live.mjs');
   report.live = await runLive(root, cases.filter(item => item.live));
