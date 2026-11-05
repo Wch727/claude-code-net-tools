@@ -36,6 +36,8 @@ npm run test:install:fresh
 
 Installation tests use a fresh path with spaces and a fake Claude CLI, never real user configuration. Coverage includes missing-dependency rejection before removal, Python without node_modules, Node startup, real npm ci in fresh mode and CLI failure propagation. CI runs fresh mode before the main checkout's npm ci.
 
+The first Windows CI run exposed a test-only string comparison: PowerShell path-case normalization made the same absolute entry appear different. Reproduced locally with lowercase TEMP, then fixed by asserting both an absolute path and identical canonical files. Windows smoke tests now always exercise this case difference; entry-location validation was not removed.
+
 ## Fixed Search Cases
 
 [30 cases](../tests/quality/search-cases.json) cover names, technical identifiers, official docs, papers, standards and concepts. Six development cases cover known regressions; 24 test cases provide a frozen comparison. The report records the dataset hash. These public cases are not a secret test set and have not been independently validated. Existing eight reliability/acceptance scenarios remain separate.

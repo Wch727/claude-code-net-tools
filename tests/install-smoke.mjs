@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const tmp = mkdtempSync(path.join(os.tmpdir(), 'net-install-'));
+// Exercise Windows path normalization even when TEMP happens to use matching case.
+const tempRoot = process.platform === 'win32' ? os.tmpdir().toLowerCase() : os.tmpdir();
+const tmp = mkdtempSync(path.join(tempRoot, 'net-install-'));
 const fresh = path.join(tmp, 'fresh checkout with spaces');
 const bin = path.join(tmp, 'bin');
 const log = path.join(tmp, 'claude.jsonl');
@@ -21,6 +23,7 @@ writeFileSync(path.join(bin, 'mock.mjs'), `import {appendFileSync} from 'node:fs
 if (process.platform === 'win32') writeFileSync(path.join(bin, 'claude.cmd'), `@"${process.execPath}" "${path.join(bin, 'mock.mjs')}" %*\r\n`);
 else writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' '${path.join(bin, 'mock.mjs').replaceAll("'", "'\\''")}' "$@"\n`, { mode: 0o755 });
 const windows = process.platform === 'win32';
+const canonical = file => windows ? realpathSync.native(file).toLowerCase() : realpathSync.native(file);
 const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, INSTALL_TEST_LOG: log };
 const events = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
 function install(runtime, { force = false, dependencies = false, fail = false } = {}) {
@@ -50,12 +53,14 @@ try {
   }
   const added = events().at(-1);
   assert.equal(added[1], 'add');
-  assert.ok(added.includes(path.join(fresh, 'claude_net_mcp.mjs')), 'register absolute entry, not caller cwd');
+  const entry = added.at(-1);
+  assert.ok(path.isAbsolute(entry), 'register an absolute entry, not caller cwd');
+  assert.equal(canonical(entry), canonical(path.join(fresh, 'claude_net_mcp.mjs')), 'registered entry must resolve to the fresh checkout file');
   const failed = install('node', { fail: true });
   assert.notEqual(failed.status, 0, 'registration failure must propagate');
   assert.ok(!failed.stdout.includes('Done.'), 'never claim failed registration succeeded');
   console.log('Fresh install: missing dependencies, non-destructive preflight, Python stdlib, Node startup and CLI failures passed; only a fake Claude CLI was invoked.');
 } finally {
-  assert.ok(path.resolve(tmp).startsWith(path.resolve(os.tmpdir()) + path.sep));
+  assert.equal(canonical(path.dirname(tmp)), canonical(os.tmpdir()));
   rmSync(tmp, { recursive: true, force: true });
 }
